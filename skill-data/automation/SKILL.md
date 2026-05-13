@@ -1,5 +1,5 @@
 ---
-name: automate-zero-native
+name: automation
 description: Automate and inspect running zero-native WebView shell apps via the built-in automation server. Use when the user asks to test the app, list windows, take a screenshot, inspect a snapshot, reload the WebView, or verify a running zero-native example.
 ---
 

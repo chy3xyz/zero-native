@@ -1,5 +1,5 @@
 ---
-name: build-zero-native-app
+name: core
 description: Explain zero-native and help build zero-native desktop apps. Use when the user asks what zero-native is, how to create a zero-native app, scaffold a frontend app, configure app.zon, choose a web engine, add a JavaScript-to-Zig bridge command, package an app, or debug a zero-native project.
 ---
 
@@ -211,7 +211,7 @@ zig build package
 zero-native package --target macos --manifest app.zon --binary zig-out/bin/MyApp
 ```
 
-For GUI smoke tests, build with automation enabled and use the `automate-zero-native` skill:
+For GUI smoke tests, build with automation enabled and use the `automation` skill:
 
 ```bash
 zig build run -Dplatform=macos -Dautomation=true
