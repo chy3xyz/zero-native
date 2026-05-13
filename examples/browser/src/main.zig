@@ -8,6 +8,7 @@ const app_permissions = [_][]const u8{zero_native.security.permission_window};
 const bridge_origins = [_][]const u8{"zero://app"};
 const window_permission = [_][]const u8{zero_native.security.permission_window};
 const builtin_policies = [_]zero_native.BridgeCommandPolicy{
+    .{ .name = "zero-native.window.list", .permissions = &window_permission, .origins = &bridge_origins },
     .{ .name = "zero-native.webview.create", .permissions = &window_permission, .origins = &bridge_origins },
     .{ .name = "zero-native.webview.list", .permissions = &window_permission, .origins = &bridge_origins },
     .{ .name = "zero-native.webview.setFrame", .permissions = &window_permission, .origins = &bridge_origins },

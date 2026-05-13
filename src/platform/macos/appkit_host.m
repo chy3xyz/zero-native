@@ -50,6 +50,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, ZeroNativeAssetSchemeHandler *> *assetSchemeHandlers;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *windowLabels;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, WKWebView *> *childWebViews;
+@property(nonatomic, strong) NSMutableSet<NSString *> *bridgeEnabledChildWebViewKeys;
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, strong) NSString *appName;
 @property(nonatomic, strong) NSString *bundleIdentifier;
@@ -81,6 +82,8 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 - (BOOL)setWebViewLayerInWindow:(uint64_t)windowId label:(NSString *)label layer:(NSInteger)layer;
 - (BOOL)closeWebViewInWindow:(uint64_t)windowId label:(NSString *)label;
 - (void)closeWebViewsInWindow:(uint64_t)windowId;
+- (void)removeBridgeHandlerForChildWebView:(WKWebView *)webView key:(NSString *)key;
+- (void)removeAllChildBridgeHandlers;
 - (void)configureApplication;
 - (void)buildMenuBar;
 - (NSMenuItem *)menuItem:(NSString *)title action:(SEL)action key:(NSString *)key modifiers:(NSEventModifierFlags)modifiers;
@@ -236,6 +239,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     self.assetSchemeHandlers = [[NSMutableDictionary alloc] init];
     self.windowLabels = [[NSMutableDictionary alloc] init];
     self.childWebViews = [[NSMutableDictionary alloc] init];
+    self.bridgeEnabledChildWebViewKeys = [[NSMutableSet alloc] init];
     self.allowedNavigationOrigins = @[ @"zero://app", @"zero://inline" ];
     self.allowedExternalURLs = @[];
     self.externalLinkAction = 0;
@@ -330,6 +334,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
         [NSEvent removeMonitor:self.shortcutEventMonitor];
         self.shortcutEventMonitor = nil;
     }
+    [self removeAllChildBridgeHandlers];
     for (WKWebView *webView in self.webViews.allValues) {
         [webView.configuration.userContentController removeScriptMessageHandlerForName:@"zeroNativeBridge"];
     }
@@ -411,6 +416,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     [window.contentView addSubview:webview positioned:NSWindowAbove relativeTo:nil];
     [webview loadRequest:[NSURLRequest requestWithURL:targetURL]];
     self.childWebViews[key] = webview;
+    if (bridgeEnabled) [self.bridgeEnabledChildWebViewKeys addObject:key];
     [self scheduleBridgeFrames];
     return YES;
 }
@@ -486,6 +492,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     NSString *key = [self webViewKeyForWindow:windowId label:label];
     WKWebView *webview = self.childWebViews[key];
     if (!webview) return NO;
+    [self removeBridgeHandlerForChildWebView:webview key:key];
     [webview removeFromSuperview];
     [self.childWebViews removeObjectForKey:key];
     [self scheduleBridgeFrames];
@@ -498,8 +505,22 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     for (NSString *key in keys) {
         if (![key hasPrefix:prefix]) continue;
         WKWebView *webview = self.childWebViews[key];
+        [self removeBridgeHandlerForChildWebView:webview key:key];
         [webview removeFromSuperview];
         [self.childWebViews removeObjectForKey:key];
+    }
+}
+
+- (void)removeBridgeHandlerForChildWebView:(WKWebView *)webView key:(NSString *)key {
+    if (!webView || key.length == 0 || ![self.bridgeEnabledChildWebViewKeys containsObject:key]) return;
+    [webView.configuration.userContentController removeScriptMessageHandlerForName:@"zeroNativeBridge"];
+    [self.bridgeEnabledChildWebViewKeys removeObject:key];
+}
+
+- (void)removeAllChildBridgeHandlers {
+    NSArray<NSString *> *keys = [self.bridgeEnabledChildWebViewKeys.allObjects copy];
+    for (NSString *key in keys) {
+        [self removeBridgeHandlerForChildWebView:self.childWebViews[key] key:key];
     }
 }
 
@@ -982,9 +1003,11 @@ static NSURL *ZeroNativeAssetEntryURL(NSString *origin, NSString *entryPath) {
     NSString *script = [NSString stringWithFormat:@"window.zero&&window.zero._complete(%@);", response.length > 0 ? response : @"{}"];
     NSString *label = webViewLabel.length > 0 ? webViewLabel : @"main";
     if ([label isEqualToString:@"main"]) {
+        if (!webView) return;
         [webView evaluateJavaScript:script completionHandler:nil];
     } else {
         WKWebView *child = self.childWebViews[[self webViewKeyForWindow:windowId label:label]];
+        if (!child) return;
         [child evaluateJavaScript:script completionHandler:nil];
     }
     [self scheduleBridgeFrames];
