@@ -2,9 +2,38 @@
 
 All notable changes to zero-native will be documented in this file.
 
-## 0.1.9
+## 0.2.0
 
 <!-- release:start -->
+
+### New Features
+
+- **Layered WebViews**: Add first-class multi-WebView stacks with overlay positioning, routing, hover coverage, resizing, reload handling, and backend support across AppKit, CEF, GTK, and WebView2 (#28).
+- **zero-native skills**: Ship CLI-served agent skills and reference material for building and automating zero-native apps (#38).
+- **Browser example**: Add a browser-style example that demonstrates layered WebViews, browser controls, and frontend asset handling (#28).
+
+### Improvements
+
+- **WebView and bridge documentation**: Document WebView APIs, built-in bridge commands, security boundaries, packaging, testing, and app model updates (#28, #38).
+- **CEF runtime builds**: Harden the CEF runtime workflows across macOS, Linux, and Windows, including Windows runtime build fixes (#25, #26).
+- **macOS compatibility**: Set the native app baseline to macOS 11 (#22).
+- **Contributor guidance**: Clarify signed commit requirements and contribution PR guidance (#10).
+
+### Bug Fixes
+
+- **Windows WebView builds**: Fix Windows WebView build failures before the layered WebView release.
+- **React example dependencies**: Include the missing React example type dependencies (#11).
+- **GitHub release notes**: Avoid duplicate contributor lists when creating GitHub releases (#24).
+- **macOS package permissions**: Preserve executable permissions for packaged macOS app binaries (#39).
+
+### Contributors
+
+- @Anshuman71
+- @PrathamGhaywat
+- @ctate
+<!-- release:end -->
+
+## 0.1.9
 
 ### New Features
 
@@ -13,7 +42,6 @@ All notable changes to zero-native will be documented in this file.
 ### Contributors
 
 - @ctate
-<!-- release:end -->
 
 ## 0.1.8
 
