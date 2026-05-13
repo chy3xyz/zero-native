@@ -29,6 +29,8 @@ The first run installs the generated frontend dependencies automatically.
 | `zero-native package` | Package the app for distribution |
 | `zero-native bundle-assets` | Copy frontend assets into the build output |
 | `zero-native automate` | Interact with a running app's automation server |
+| `zero-native skills list` | List built-in AI agent skills |
+| `zero-native skills get <name>` | Output AI agent skill content |
 | `zero-native version` | Print the zero-native version |
 
 ## More

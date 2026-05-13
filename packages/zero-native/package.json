@@ -9,6 +9,8 @@
   "types": "./zero-native.d.ts",
   "files": [
     "bin",
+    "skill-data",
+    "skills",
     "scripts",
     "src",
     "zero-native.d.ts",

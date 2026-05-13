@@ -1,11 +1,34 @@
 ---
 name: core
-description: Explain zero-native and help build zero-native desktop apps. Use when the user asks what zero-native is, how to create a zero-native app, scaffold a frontend app, configure app.zon, choose a web engine, add a JavaScript-to-Zig bridge command, package an app, or debug a zero-native project.
+description: Core zero-native guide for AI agents. Read this before explaining zero-native or changing a zero-native app. Covers the mental model, project structure, app.zon, App and Runtime patterns, frontend integration, web engines, JavaScript bridge commands, permissions, windows, WebViews, dialogs, packaging, debugging, testing, and when to load deeper references. Use when the user asks what zero-native is, how to build or modify an app, how to package or debug it, or how to add native capabilities.
 ---
 
 # Build zero-native apps
 
-zero-native is a Zig desktop app shell for modern web frontends. Apps run native Zig code around a WebView: WKWebView on macOS, WebKitGTK on Linux, and optionally Chromium through CEF where supported. Prefer the platform WebView for small apps and CEF/Chromium when rendering consistency matters.
+zero-native is a Zig desktop app shell for modern web frontends. A zero-native app is native Zig code that owns windows, policies, lifecycle, and platform services while rendering web UI in a WebView. The default engine is the platform WebView: WKWebView on macOS and WebKitGTK on Linux. Apps can also bundle Chromium through CEF where supported.
+
+Agents should assume they do not know zero-native from general model knowledge. Read this skill first. For implementation work, run `zero-native skills get core --full` so the referenced files are included in the CLI output.
+
+## Mental model
+
+- `App` describes the product: app state, name, WebView source, lifecycle callbacks, and optional bridge dispatcher.
+- `Runtime` owns the event loop, windows, bridge dispatch, security checks, automation, tracing, platform services, and window state.
+- `WebViewSource` tells the runtime what to load: inline HTML, a URL, or packaged assets from a local app origin.
+- `app.zon` is the app manifest: identity, icons, windows, frontend assets, web engine, permissions, bridge policy, security policy, and packaging inputs.
+- `src/runner.zig` is the generated runtime wiring. Edit it when adding runtime services, security policy, builtin bridge policy, tracing, automation, or platform setup.
+- `src/main.zig` is app behavior. Edit it when changing app state, source selection, lifecycle callbacks, or app-defined bridge handlers.
+- `frontend/` is normal web code. It talks to native Zig through `window.zero.invoke()` or builtin helpers when those are enabled.
+
+## Task router
+
+These references are included by `zero-native skills get core --full`. Use them when the task touches the topic:
+
+- Project creation, generated files, build steps: `references/project-anatomy.md`
+- `App`, `Runtime`, callbacks, embedding, tests: `references/app-model-runtime.md`
+- React/Vue/Svelte/Next/Vite, dev server, bundled assets: `references/frontend-assets.md`
+- App-defined bridge commands, builtin commands, permissions, windows, WebViews, dialogs: `references/bridge-security-native-capabilities.md`
+- Web engine choice, CEF, packaging, signing, doctor, logs, debugging: `references/web-engines-packaging-debugging.md`
+- Running-app inspection and smoke tests: `zero-native skills get automation`
 
 ## Quick start
 
@@ -20,18 +43,23 @@ zig build run
 
 Frontend choices are `next`, `vite`, `react`, `svelte`, and `vue`. The first `zig build run` installs frontend dependencies, builds the native shell, and opens a desktop window.
 
-## Project shape
+## Workflow for existing apps
 
-A generated app usually has:
+Before editing an existing zero-native app:
 
-- `build.zig`: Zig build graph with platform, web engine, trace, debug overlay, automation, bridge, dev, test, and package steps.
-- `build.zig.zon`: Zig package manifest and zero-native dependency.
-- `app.zon`: app metadata, icons, windows, frontend assets, web engine, bridge policy, permissions, and navigation policy.
-- `src/main.zig`: app state plus `app()` and optional `bridge()` methods.
-- `src/runner.zig`: runtime wiring for platform services, tracing, panic capture, window state, security, automation, and bridge setup.
-- `frontend/`: the selected framework project.
+1. Read `app.zon`, `src/main.zig`, `src/runner.zig`, and `build.zig`.
+2. Identify whether the change is app metadata/policy, runtime wiring, app-native behavior, frontend behavior, packaging, or automation.
+3. Follow the generated code and examples in the repository instead of inventing a new app layout.
+4. Prefer exact security policy changes over broad allowances.
+5. Validate with the narrowest useful command.
 
-When modifying a real project, inspect the generated files first and follow the local pattern. The examples in `examples/next`, `examples/react`, `examples/svelte`, and `examples/vue` are complete reference apps.
+Common file ownership:
+
+- `app.zon`: app identity, version, icons, windows, permissions, capabilities, bridge command policy, allowed origins, frontend dist/dev config, web engine, CEF config.
+- `src/main.zig`: `App` state, source selection, lifecycle callbacks, custom bridge handlers.
+- `src/runner.zig`: `Runtime.init`, platform selection, security policy, builtin bridge policy, `js_window_api`, automation server, trace sinks, panic capture, window state store.
+- `build.zig`: build options, frontend build/dev/package steps, platform link setup, test steps.
+- `frontend/`: web app implementation, `window.zero` calls, dev/build config.
 
 ## Core app model
 
@@ -67,7 +95,7 @@ fn source(context: *anyopaque) anyerror!zero_native.WebViewSource {
 }
 ```
 
-`sourceFromEnv` reads `ZERO_NATIVE_FRONTEND_URL`; otherwise it serves the configured asset directory.
+`sourceFromEnv` reads `ZERO_NATIVE_FRONTEND_URL`; otherwise it serves the configured asset directory. Use it for most framework apps.
 
 ## app.zon essentials
 
@@ -109,7 +137,42 @@ Keep `app.zon` as the source of truth for app-level behavior:
 
 Use exact local origins for dev servers. Add `zero://inline` only for inline HTML sources.
 
-## Frontend development
+## Common implementation recipes
+
+### Add a new framework app
+
+Use `zero-native init <path> --frontend <next|vite|react|svelte|vue>`. Then inspect the generated `app.zon`, `src/main.zig`, and `build.zig` before customizing. For framework behavior, keep frontend work in `frontend/` and use `sourceFromEnv` so development and packaged builds share one app shell.
+
+### Add a native bridge command
+
+1. Add state and a handler in `src/main.zig`.
+2. Register the handler in `bridge()`.
+3. Allow the command in `app.zon` and in the runtime bridge policy if the runner reads manifest policy into runtime.
+4. Call it from JavaScript with `window.zero.invoke("namespace.command", payload)`.
+5. Return valid JSON from Zig. Use `zero_native.bridge.writeJsonStringValue()` for user-controlled strings.
+
+Bridge calls are size-limited, origin-checked, permission-checked, and routed only to registered handlers.
+
+### Add windows, child WebViews, or dialogs
+
+Use builtin bridge commands only after enabling a policy for the exact commands and origins. Window and child WebView commands need the `window` permission when permissions are configured. Dialog commands are always default-deny and require explicit `builtin_bridge` policy. See `references/bridge-security-native-capabilities.md`.
+
+### Choose a web engine
+
+Default to `.web_engine = "system"` for small apps and native footprint. Use `.web_engine = "chromium"` plus `.cef` when the app needs a pinned Chromium platform or rendering consistency. Chromium apps must install/package the matching CEF layout.
+
+### Package an app
+
+Keep package metadata in `app.zon`, build the frontend assets, build the native binary, then package:
+
+```bash
+zig build package
+zero-native doctor --manifest app.zon --strict
+```
+
+Use signing and CEF options only when the product requires them.
+
+## Development commands
 
 For iterative frontend work, use the managed dev server flow:
 
@@ -125,66 +188,7 @@ zero-native dev --manifest app.zon --binary zig-out/bin/MyApp
 
 Vite usually uses `http://127.0.0.1:5173/`; Next.js usually uses `http://127.0.0.1:3000/`. The app WebView loads the dev URL directly, so framework HMR remains owned by Vite, Next.js, or the selected dev server.
 
-## Web engine choice
-
-Default to:
-
-```zig
-.web_engine = "system",
-```
-
-System WebView keeps app size small and startup fast. Use Chromium when the app needs a pinned web platform or tighter rendering consistency:
-
-```zig
-.web_engine = "chromium",
-.cef = .{ .dir = "third_party/cef/macos", .auto_install = false },
-```
-
-Install CEF before building or packaging Chromium apps:
-
-```bash
-zero-native cef install
-zig build run
-```
-
-Use one-off overrides such as `-Dweb-engine=chromium`, `-Dcef-dir=...`, or `-Dcef-auto-install=true` only when appropriate; normal app behavior should come from `app.zon`.
-
-## Bridge commands
-
-Use `window.zero.invoke(command, payload)` for JavaScript-to-Zig calls. Bridge commands are default-deny: a handler must be registered in Zig and allowed by policy.
-
-Handler pattern:
-
-```zig
-fn ping(context: *anyopaque, invocation: zero_native.bridge.Invocation, output: []u8) anyerror![]const u8 {
-    _ = invocation;
-    const self: *App = @ptrCast(@alignCast(context));
-    self.ping_count += 1;
-    return std.fmt.bufPrint(output, "{{\"message\":\"pong\",\"count\":{d}}}", .{self.ping_count});
-}
-```
-
-Dispatcher pattern:
-
-```zig
-fn bridge(self: *App) zero_native.BridgeDispatcher {
-    self.handlers = .{.{ .name = "native.ping", .context = self, .invoke_fn = ping }};
-    return .{
-        .policy = .{ .enabled = true, .commands = &policies },
-        .registry = .{ .handlers = &self.handlers },
-    };
-}
-```
-
-JavaScript pattern:
-
-```javascript
-const result = await window.zero.invoke("native.ping", { source: "webview" });
-```
-
-Return valid JSON from handlers. For user-controlled strings, use `zero_native.bridge.writeJsonStringValue(output, value)`.
-
-## Security rules
+## Security defaults
 
 Treat WebView content as untrusted:
 
@@ -194,10 +198,11 @@ Treat WebView content as untrusted:
 - Keep external links denied unless the product explicitly needs them.
 - Use a strict CSP for packaged frontend assets.
 - Built-in dialogs are always default-deny and require explicit `builtin_bridge` policy.
+- Child WebViews receive `window.zero` only when explicitly created with `bridge: true`.
 
 Common bridge failure codes are `invalid_request`, `unknown_command`, `permission_denied`, `handler_failed`, `payload_too_large`, and `internal_error`.
 
-## Build, test, and package
+## Validate changes
 
 Useful commands:
 
@@ -205,10 +210,10 @@ Useful commands:
 zig build run
 zig build dev
 zig build test
+zig build test-tooling
 zero-native validate app.zon
 zero-native doctor --manifest app.zon --strict
 zig build package
-zero-native package --target macos --manifest app.zon --binary zig-out/bin/MyApp
 ```
 
 For GUI smoke tests, build with automation enabled and use the `automation` skill:
@@ -220,10 +225,15 @@ zig-out/bin/zero-native automate snapshot
 
 When changing app behavior, add focused Zig tests when the code can run headlessly. Use automation-based tests only for WebView/runtime integration that requires a GUI-capable session.
 
-## Agent workflow
+## Examples to inspect
 
-1. Determine whether the user wants an explanation, a new scaffold, a change to an existing app, packaging, or debugging.
-2. Read `app.zon`, `src/main.zig`, `src/runner.zig`, and `build.zig` before editing an existing app.
-3. Keep app metadata and policies in `app.zon`; keep runtime wiring in `runner.zig`; keep product behavior in app code and frontend files.
-4. Prefer generated/example patterns over inventing new build or runtime wiring.
-5. Validate with the narrowest useful commands: `zig build test`, `zero-native validate app.zon`, `zero-native doctor --manifest app.zon --strict`, or `zig build run` depending on the change.
+- `examples/hello`: smallest inline HTML app.
+- `examples/webview`: bridge and WebView runtime example.
+- `examples/browser`: layered WebView/browser-style example.
+- `examples/next`: Next.js with production assets.
+- `examples/react`, `examples/svelte`, `examples/vue`: Vite frontend apps.
+- `examples/ios`, `examples/android`: mobile host embedding examples.
+
+## When answering users
+
+Explain zero-native in concrete terms: Zig owns native app lifecycle and security; web UI renders in a WebView; the bridge is opt-in and policy controlled; `app.zon` is the manifest; framework frontend development uses a dev server in development and bundled assets in production. If asked to implement, read the app files first and make the smallest change in the correct layer.

@@ -69,8 +69,45 @@ The `zero-native` CLI provides project scaffolding, validation, packaging, and d
       <td>Interact with the automation server</td>
     </tr>
     <tr>
+      <td><code>zero-native skills list</code></td>
+      <td>List built-in AI agent skills</td>
+    </tr>
+    <tr>
+      <td><code>zero-native skills get &lt;name&gt; [--full]</code></td>
+      <td>Output built-in AI agent skill content</td>
+    </tr>
+    <tr>
       <td><code>zero-native version</code></td>
       <td>Print the zero-native version</td>
+    </tr>
+  </tbody>
+</table>
+
+## `zero-native skills` subcommands
+
+<table>
+  <thead>
+    <tr>
+      <th>Subcommand</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>skills list</code></td>
+      <td>List built-in skills served by the installed CLI</td>
+    </tr>
+    <tr>
+      <td><code>skills get core</code></td>
+      <td>Output the zero-native app-building guide for AI agents</td>
+    </tr>
+    <tr>
+      <td><code>skills get automation</code></td>
+      <td>Output the running-app automation guide for AI agents</td>
+    </tr>
+    <tr>
+      <td><code>skills get --all [--full]</code></td>
+      <td>Output every non-hidden skill; <code>--full</code> also includes reference and template files when present</td>
     </tr>
   </tbody>
 </table>

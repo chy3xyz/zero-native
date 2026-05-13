@@ -15,3 +15,11 @@ rmSync(targetDir, { recursive: true, force: true });
 cpSync(sourceDir, targetDir, { recursive: true });
 
 console.log(`✓ Copied framework sources to ${targetDir}`);
+
+for (const dir of ['skills', 'skill-data']) {
+  const source = join(repoRoot, dir);
+  const target = join(projectRoot, dir);
+  rmSync(target, { recursive: true, force: true });
+  cpSync(source, target, { recursive: true });
+  console.log(`✓ Copied ${dir} to ${target}`);
+}

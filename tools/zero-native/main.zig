@@ -1,5 +1,6 @@
 const std = @import("std");
 const automation_cli = @import("automation.zig");
+const skills_cli = @import("skills.zig");
 const tooling = @import("tooling");
 
 const version = "0.1.9";
@@ -130,6 +131,11 @@ pub fn main(init: std.process.Init) !void {
         tooling.package.printDiagnostic(stats);
     } else if (std.mem.eql(u8, command, "automate")) {
         try automation_cli.run(allocator, init.io, args[2..]);
+    } else if (std.mem.eql(u8, command, "skills")) {
+        skills_cli.run(allocator, init.io, init.environ_map, args[2..]) catch |err| switch (err) {
+            error.WriteFailed => return,
+            else => return err,
+        };
     } else {
         return usage();
     }
@@ -152,6 +158,7 @@ fn usage() void {
         \\  package-ios [--output path] [--binary path]
         \\  package-android [--output path] [--binary path]
         \\  automate <command>
+        \\  skills list|get
         \\  version
         \\
     , .{});

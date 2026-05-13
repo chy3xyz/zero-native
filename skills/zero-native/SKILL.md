@@ -11,12 +11,15 @@ zero-native is a Zig desktop app shell for building native desktop apps with web
 
 ## Start here
 
-This file is a discovery stub. Load the detailed workflow content from this repository before implementing or explaining zero-native app work:
+This file is a discovery stub for agents that installed zero-native once with a skills installer such as `npx skills add zero-native`. Before implementing or explaining zero-native app work, use the installed CLI to discover and load the current skill content:
 
-- `skill-data/core/SKILL.md`: full app-building guide covering the app model, `app.zon`, frontend development, bridge commands, security, packaging, and validation.
-- `skill-data/automation/SKILL.md`: running-app inspection and WebView shell automation.
+```bash
+zero-native skills list
+zero-native skills get core
+zero-native skills get core --full
+```
 
-Use `skill-data/core/SKILL.md` for most zero-native app questions. Use `skill-data/automation/SKILL.md` when testing a running app, taking snapshots, requesting reloads, or using the built-in automation server.
+Use `zero-native skills get core` for initial orientation. Use `zero-native skills get core --full` for implementation tasks because it includes the reference files for project anatomy, runtime, frontend assets, bridge/security/native capabilities, packaging, and debugging. Use `zero-native skills get automation` when testing a running app, taking snapshots, requesting reloads, or using the built-in automation server.
 
 ## Quick orientation
 
