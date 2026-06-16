@@ -1,3 +1,14 @@
+//! Notification plugin module — in-memory notification log with command
+//! dispatch.
+//!
+//! Commands are routed by `cmd.name` only; any argument string lives in
+//! `cmd.payload`. Supported commands:
+//! - `notification.notify` — payload `"title|message"` (split on the first
+//!   `|`). If no `|` is present, the whole payload is the title and the
+//!   message is empty. Appends to the recorded list.
+//! - `notification.list` — clears the recorded list (no output channel).
+//! - `notification.clear` — clears the recorded list.
+
 const std = @import("std");
 const extensions = @import("root.zig");
 
@@ -40,9 +51,8 @@ pub const capabilities: []const extensions.Capability = &.{
     .{ .kind = .custom, .name = "notification" },
 };
 
-/// Command-name constants. Payloads are appended after a `:` separator when
-/// supplied (e.g. "notification.notify:hello|world"); commands with no
-/// payload use the bare name.
+/// Command-name constants. Payloads are carried in `cmd.payload`; commands
+/// with no argument use the bare name with an empty payload.
 pub const cmd_notify: []const u8 = "notification.notify";
 pub const cmd_list: []const u8 = "notification.list";
 pub const cmd_clear: []const u8 = "notification.clear";
@@ -62,10 +72,10 @@ pub fn stop(context: *anyopaque, runtime: extensions.RuntimeContext) anyerror!vo
     self.allocator.destroy(self);
 }
 
-/// Routes commands by name. The payload (if any) is supplied after a `:` in
-/// `cmd.name`, e.g. "notification.notify:title|message". Supported commands:
-/// - `notification.notify` — payload "title|message" (splits on first '|').
-///   If no '|' is present, the whole payload is the title and the message is
+/// Routes commands by `cmd.name`. The argument string (if any) lives in
+/// `cmd.payload`. Supported commands:
+/// - `notification.notify` — `cmd.payload` is `"title|message"`, split on the
+///   first `|`. With no `|`, the payload is the title and the message is
 ///   empty. Appends to the recorded list.
 /// - `notification.list` — clears the recorded list (no output channel).
 /// - `notification.clear` — clears the recorded list.
@@ -73,27 +83,15 @@ pub fn command(context: *anyopaque, runtime: extensions.RuntimeContext, cmd: ext
     _ = runtime;
     const self: *NotificationState = @ptrCast(@alignCast(context));
 
-    const parsed = parseCommand(cmd.name);
-
-    if (std.mem.eql(u8, parsed.head, cmd_notify)) {
-        try appendNotification(self, parsed.payload);
+    if (std.mem.eql(u8, cmd.name, cmd_notify)) {
+        try appendNotification(self, cmd.payload);
         return;
     }
 
-    if (std.mem.eql(u8, parsed.head, cmd_list) or std.mem.eql(u8, parsed.head, cmd_clear)) {
+    if (std.mem.eql(u8, cmd.name, cmd_list) or std.mem.eql(u8, cmd.name, cmd_clear)) {
         clearNotifications(self);
         return;
     }
-}
-
-/// Splits a command string into its routing head and payload. The payload is
-/// everything after the first `:`. The `:` is omitted so callers can pass
-/// bare command names like "notification.notify".
-fn parseCommand(raw: []const u8) struct { head: []const u8, payload: []const u8 } {
-    if (std.mem.indexOfScalar(u8, raw, ':')) |index| {
-        return .{ .head = raw[0..index], .payload = raw[index + 1 ..] };
-    }
-    return .{ .head = raw, .payload = "" };
 }
 
 fn appendNotification(self: *NotificationState, payload: []const u8) !void {
@@ -154,13 +152,16 @@ test "notification plugin records, lists, and clears notifications" {
     try module.hooks.start_fn.?(module.context, runtime);
 
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "notification.notify:hello|world",
+        .name = "notification.notify",
+        .payload = "hello|world",
     });
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "notification.notify:title-only",
+        .name = "notification.notify",
+        .payload = "title-only",
     });
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "notification.notify:a|b|c",
+        .name = "notification.notify",
+        .payload = "a|b|c",
     });
 
     const state: *NotificationState = @ptrCast(@alignCast(module.context));
@@ -178,7 +179,8 @@ test "notification plugin records, lists, and clears notifications" {
     try std.testing.expectEqual(@as(usize, 0), state.notifications.items.len);
 
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "notification.notify:again|message",
+        .name = "notification.notify",
+        .payload = "again|message",
     });
     try std.testing.expectEqual(@as(usize, 1), state.notifications.items.len);
 
@@ -200,7 +202,8 @@ test "notification plugin registers with a ModuleRegistry" {
 
     try registry.startAll(runtime);
     try registry.dispatchCommand(runtime, .{
-        .name = "notification.notify:ping|pong",
+        .name = "notification.notify",
+        .payload = "ping|pong",
     });
     try registry.dispatchCommand(runtime, .{ .name = "notification.clear" });
     try registry.stopAll(runtime);
@@ -220,13 +223,16 @@ test "notification stop frees all recorded items" {
     try module.hooks.start_fn.?(module.context, runtime);
 
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "notification.notify:first|one",
+        .name = "notification.notify",
+        .payload = "first|one",
     });
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "notification.notify:second|two",
+        .name = "notification.notify",
+        .payload = "second|two",
     });
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "notification.notify:third|three",
+        .name = "notification.notify",
+        .payload = "third|three",
     });
 
     // stop releases the state and all owned strings; std.testing.allocator

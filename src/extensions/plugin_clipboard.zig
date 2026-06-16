@@ -1,12 +1,12 @@
 //! Clipboard plugin module — in-memory text buffer with command dispatch.
 //!
-//! The extension `Command` struct only carries a name and an optional target
-//! module id, so there is no in-band payload. The `clipboard.write_text`
-//! command populates the buffer with a default sample, and the
-//! `clipboard.read_text` command duplicates the current buffer into
-//! `state.last_read` for inspection. A future revision that adds a payload
-//! channel can swap the default-text write for a payload-driven write without
-//! changing the surrounding hooks or registry wiring.
+//! Commands are routed by `cmd.name` only; any argument string lives in
+//! `cmd.payload`. Supported commands:
+//! - `clipboard.write_text` — writes `cmd.payload` to the buffer. When
+//!   `cmd.payload` is empty, the fixed sample `default_text` is used so the
+//!   test suite can exercise the write path without a real clipboard bridge.
+//! - `clipboard.read_text` — duplicates the current buffer into
+//!   `state.last_read` for inspection.
 
 const std = @import("std");
 const extensions = @import("root.zig");
@@ -14,8 +14,11 @@ const extensions = @import("root.zig");
 /// Unique module id for the clipboard plugin.
 pub const ModuleId: extensions.ModuleId = 100;
 
-/// Default text written by the `clipboard.write_text` command.
-pub const default_text: []const u8 = "clipboard: hello";
+/// Default text written by the `clipboard.write_text` command when the
+/// caller leaves `cmd.payload` empty. Matches the convention used by the
+/// other plugins (a fixed sample so tests have something predictable to
+/// assert against without needing a real clipboard bridge).
+pub const default_text: []const u8 = "hello from test";
 
 /// Mutable state owned by a clipboard module instance.
 pub const ClipboardState = struct {
@@ -70,7 +73,8 @@ pub fn command(
     const state: *ClipboardState = @ptrCast(@alignCast(context));
     if (std.mem.eql(u8, cmd.name, "clipboard.write_text")) {
         if (state.text) |old| state.allocator.free(old);
-        state.text = try state.allocator.dupe(u8, default_text);
+        const text = if (cmd.payload.len == 0) default_text else cmd.payload;
+        state.text = try state.allocator.dupe(u8, text);
     } else if (std.mem.eql(u8, cmd.name, "clipboard.read_text")) {
         if (state.last_read) |old| {
             state.allocator.free(old);
@@ -92,6 +96,7 @@ test "clipboard write then read round-trips the default text" {
     try std.testing.expect(state.last_read == null);
 
     try module.hooks.start_fn.?(module.context, runtime);
+    // Empty payload → plugin uses `default_text`.
     try module.hooks.command_fn.?(module.context, runtime, .{ .name = "clipboard.write_text" });
     try std.testing.expect(state.text != null);
     try std.testing.expectEqualStrings(default_text, state.text.?);
@@ -102,6 +107,22 @@ test "clipboard write then read round-trips the default text" {
 
     // `stop` must free the buffers and the state — std.testing.allocator
     // verifies no leaks at the end of the test scope.
+    try module.hooks.stop_fn.?(module.context, runtime);
+}
+
+test "clipboard write honours an explicit payload" {
+    const allocator = std.testing.allocator;
+    const module = try create(allocator);
+    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+    const state: *ClipboardState = @ptrCast(@alignCast(module.context));
+
+    try module.hooks.start_fn.?(module.context, runtime);
+    try module.hooks.command_fn.?(module.context, runtime, .{
+        .name = "clipboard.write_text",
+        .payload = "typed by the caller",
+    });
+    try std.testing.expectEqualStrings("typed by the caller", state.text.?);
+
     try module.hooks.stop_fn.?(module.context, runtime);
 }
 

@@ -94,6 +94,8 @@ pub fn build(b: *std.Build) void {
     debug_mod.addImport("app_dirs", app_dirs_mod);
     debug_mod.addImport("trace", trace_mod);
 
+    const extensions_mod = module(b, target, optimize, "src/extensions/all.zig");
+
     const geometry_tests = testArtifact(b, geometry_mod);
     const assets_tests = testArtifact(b, assets_mod);
     const app_dirs_tests = testArtifact(b, app_dirs_mod);
@@ -102,6 +104,7 @@ pub fn build(b: *std.Build) void {
     const diagnostics_tests = testArtifact(b, diagnostics_mod);
     const platform_info_tests = testArtifact(b, platform_info_mod);
     const json_tests = testArtifact(b, json_mod);
+    const extensions_tests = testArtifact(b, extensions_mod);
 
     const desktop_mod = module(b, target, optimize, "src/root.zig");
     desktop_mod.addImport("geometry", geometry_mod);
@@ -172,6 +175,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(diagnostics_tests).step);
     test_step.dependOn(&b.addRunArtifact(platform_info_tests).step);
     test_step.dependOn(&b.addRunArtifact(json_tests).step);
+    test_step.dependOn(&b.addRunArtifact(extensions_tests).step);
     test_step.dependOn(&b.addRunArtifact(desktop_tests).step);
     test_step.dependOn(&b.addRunArtifact(tooling_tests).step);
 
@@ -183,6 +187,7 @@ pub fn build(b: *std.Build) void {
     addTestStep(b, "test-diagnostics", "Run diagnostics module tests", diagnostics_tests);
     addTestStep(b, "test-platform-info", "Run platform info module tests", platform_info_tests);
     addTestStep(b, "test-json", "Run JSON primitive tests", json_tests);
+    addTestStep(b, "test-extensions", "Run extension module and plugin tests", extensions_tests);
     addTestStep(b, "test-desktop", "Run zero-native framework tests", desktop_tests);
     addTestStep(b, "test-tooling", "Run zero-native tooling tests", tooling_tests);
 
