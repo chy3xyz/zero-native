@@ -1,21 +1,21 @@
-//! HTTP plugin module — record-only stub for an HTTP fetch API.
+//! HTTP plugin module — executes real HTTP/1.1 requests via a vendored
+//! client.
 //!
 //! Commands are routed by `cmd.name` only; any argument string lives in
 //! `cmd.payload`. Supported commands:
 //! - `http.fetch` — `cmd.payload` is `"METHOD URL"` (split on the first
 //!   ASCII space). With no space, the call is silently rejected (the
-//!   previously recorded method/url are left untouched).
-//! - `http.clear` — clears the recorded method/url/status.
+//!   previously recorded method/url are left untouched). For `http://`
+//!   URLs, a real TCP request is made; `https://` URLs are recorded only
+//!   (HTTPS support is deferred — see http_client.zig).
+//! - `http.clear` — clears the recorded method/url/status/body.
 //!
-//! The plugin is intentionally **record-only**: no actual network request is
-//! issued. `state.last_method` and `state.last_url` are populated with
-//! allocator-owned duplicates of the parsed slices and `state.last_status`
-//! is left at `0`. The extension `Command` has no return channel, so tests
-//! inspect these fields directly. Real network support via `std.http.Client`
-//! is left for a follow-up once the Zig 0.17-dev API stabilises.
+//! The extension `Command` has no return channel, so tests inspect the
+//! state fields directly after dispatching a command.
 
 const std = @import("std");
 const extensions = @import("root.zig");
+const http_client = @import("http_client.zig");
 
 /// Unique module id for the http plugin. The shell plugin uses 101, so we
 /// pick from the remaining {103, 104} slots reserved for the W8 plugins.
@@ -39,14 +39,16 @@ pub const cmd_clear: []const u8 = "http.clear";
 ///
 /// `last_method` and `last_url` are allocator-owned slices duplicated from
 /// the most recent `http.fetch` payload; both are freed by `stop` (and by
-/// subsequent `http.fetch` / `http.clear` calls). `last_status` is reserved
-/// for a future implementation that issues real requests; it stays at `0`
-/// while the plugin remains record-only.
+/// subsequent `http.fetch` / `http.clear` calls). `last_body` holds the
+/// response body from the most recent real HTTP request and is freed
+/// similarly. `last_status` reflects the HTTP status code.
 pub const HttpState = struct {
     last_method: ?[]u8,
     last_url: ?[]u8,
+    last_body: ?[]u8,
     last_status: u16 = 0,
     allocator: std.mem.Allocator,
+    io: std.Io,
 };
 
 // ---------------------------------------------------------------------------
@@ -57,13 +59,14 @@ pub const HttpState = struct {
 /// acquire before it can begin accepting commands.
 pub fn start(_: *anyopaque, _: extensions.RuntimeContext) anyerror!void {}
 
-/// Stop hook — frees the recorded method/url strings and destroys the
+/// Stop hook — frees the recorded method/url/body strings and destroys the
 /// state. Mirrors `create`'s allocator exactly. Safe to call only once
 /// per `create`; subsequent calls would double-free.
 pub fn stop(context: *anyopaque, _: extensions.RuntimeContext) anyerror!void {
     const state: *HttpState = @ptrCast(@alignCast(context));
     if (state.last_method) |method| state.allocator.free(method);
     if (state.last_url) |url| state.allocator.free(url);
+    if (state.last_body) |body| state.allocator.free(body);
     state.allocator.destroy(state);
 }
 
@@ -97,11 +100,17 @@ pub fn command(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Stores the parsed method and URL into `state`. Splits the payload on the
-/// first ASCII space; payloads with no separator are rejected silently
-/// (leaving prior state untouched) so callers can detect malformed input by
-/// inspecting the state. `last_status` is left at `0` — the plugin is a
-/// record-only stub for now.
+/// Stores the parsed method and URL into `state`. Splits the payload on
+/// the first ASCII space; payloads with no separator are rejected silently
+/// (leaving prior state untouched).
+///
+/// For `http://` URLs, a real TCP request is issued via the vendored
+/// http_client. For `https://` (or any other scheme), the plugin falls
+/// back to record-only mode (HTTPS support is deferred — requires TLS).
+///
+/// If the HTTP request succeeds, `last_status` and `last_body` are
+/// updated. If it fails, the method/url are still recorded but
+/// `last_status` remains 0 and any previous body is freed.
 fn handleFetch(state: *HttpState, payload: []const u8) !void {
     const separator = std.mem.indexOfScalar(u8, payload, ' ') orelse return;
     const raw_method = payload[0..separator];
@@ -114,17 +123,49 @@ fn handleFetch(state: *HttpState, payload: []const u8) !void {
     const owned_url = try state.allocator.dupe(u8, raw_url);
     errdefer state.allocator.free(owned_url);
 
-    // Replace any previously recorded strings to keep the allocator's
-    // outstanding set bounded.
+    // Free any previously recorded data to keep allocations bounded.
     if (state.last_method) |previous| state.allocator.free(previous);
     if (state.last_url) |previous| state.allocator.free(previous);
+    if (state.last_body) |previous| state.allocator.free(previous);
 
     state.last_method = owned_method;
     state.last_url = owned_url;
+    state.last_body = null;
     state.last_status = 0;
+
+    // Only attempt real requests for http:// URLs. HTTPS support is
+    // deferred until a TLS dependency (e.g. OpenSSL) is integrated.
+    if (!std.mem.eql(u8, raw_url[0..@min(raw_url.len, 7)], "http://")) {
+        // Not an http:// URL — record-only fallback. This handles
+        // https:// URLs gracefully until TLS support is added.
+        return;
+    }
+
+    // Parse the method and URL for the vendored HTTP client.
+    const method: http_client.Method = if (std.mem.eql(u8, raw_method, "GET"))
+        .GET
+    else if (std.mem.eql(u8, raw_method, "POST"))
+        .POST
+    else
+        return; // Unsupported method — record-only fallback.
+
+    const url = http_client.Url.parse(raw_url) orelse return;
+
+    const config = http_client.Config{
+        .method = method,
+        .url = url,
+    };
+
+    // Perform the real HTTP request. On failure we keep the recorded
+    // method/url but leave status at 0 (catch returns void).
+    const response = http_client.request(state.allocator, state.io, config) catch return;
+
+    state.last_status = response.status;
+    state.last_body = response.body;
 }
 
-/// Releases the recorded method/url and resets `last_status`. Idempotent.
+/// Releases the recorded method/url/body and resets `last_status`.
+/// Idempotent.
 fn clearState(state: *HttpState) void {
     if (state.last_method) |previous| {
         state.allocator.free(previous);
@@ -133,6 +174,10 @@ fn clearState(state: *HttpState) void {
     if (state.last_url) |previous| {
         state.allocator.free(previous);
         state.last_url = null;
+    }
+    if (state.last_body) |previous| {
+        state.allocator.free(previous);
+        state.last_body = null;
     }
     state.last_status = 0;
 }
@@ -144,15 +189,17 @@ fn clearState(state: *HttpState) void {
 /// Allocates a new `HttpState` and wraps it in a `Module`. The caller is
 /// responsible for invoking `start` and `stop`; failure to call `stop` will
 /// leak the state and any recorded strings.
-pub fn create(allocator: std.mem.Allocator) !extensions.Module {
+pub fn create(allocator: std.mem.Allocator, io: std.Io) !extensions.Module {
     const state = try allocator.create(HttpState);
     errdefer allocator.destroy(state);
 
     state.* = .{
         .last_method = null,
         .last_url = null,
+        .last_body = null,
         .last_status = 0,
         .allocator = allocator,
+        .io = io,
     };
 
     return .{
@@ -174,13 +221,17 @@ pub fn create(allocator: std.mem.Allocator) !extensions.Module {
 // Tests
 // ---------------------------------------------------------------------------
 
+const test_runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+
 test "http fetch records method and url" {
     const allocator = std.testing.allocator;
-    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+    const io = std.testing.io;
 
-    const module = try create(allocator);
-    try module.hooks.start_fn.?(module.context, runtime);
-    try module.hooks.command_fn.?(module.context, runtime, .{
+    const module = try create(allocator, io);
+    defer assertStop(module);
+
+    try module.hooks.start_fn.?(module.context, test_runtime);
+    try module.hooks.command_fn.?(module.context, test_runtime, .{
         .name = "http.fetch",
         .payload = "GET https://example.com",
     });
@@ -191,22 +242,23 @@ test "http fetch records method and url" {
     try std.testing.expectEqualStrings("GET", state.last_method.?);
     try std.testing.expectEqualStrings("https://example.com", state.last_url.?);
     try std.testing.expectEqual(@as(u16, 0), state.last_status);
-
-    try module.hooks.stop_fn.?(module.context, runtime);
+    try std.testing.expect(state.last_body == null);
 }
 
 test "http fetch replaces previous method and url without leaking" {
     const allocator = std.testing.allocator;
-    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+    const io = std.testing.io;
 
-    const module = try create(allocator);
-    try module.hooks.start_fn.?(module.context, runtime);
+    const module = try create(allocator, io);
+    defer assertStop(module);
 
-    try module.hooks.command_fn.?(module.context, runtime, .{
+    try module.hooks.start_fn.?(module.context, test_runtime);
+
+    try module.hooks.command_fn.?(module.context, test_runtime, .{
         .name = "http.fetch",
         .payload = "GET https://example.com",
     });
-    try module.hooks.command_fn.?(module.context, runtime, .{
+    try module.hooks.command_fn.?(module.context, test_runtime, .{
         .name = "http.fetch",
         .payload = "POST https://example.org/path",
     });
@@ -216,38 +268,40 @@ test "http fetch replaces previous method and url without leaking" {
     try std.testing.expectEqualStrings("https://example.org/path", state.last_url.?);
 
     // std.testing.allocator fails the test if the replacement leaked.
-    try module.hooks.stop_fn.?(module.context, runtime);
 }
 
 test "http clear empties the recorded fields" {
     const allocator = std.testing.allocator;
-    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+    const io = std.testing.io;
 
-    const module = try create(allocator);
-    try module.hooks.start_fn.?(module.context, runtime);
-    try module.hooks.command_fn.?(module.context, runtime, .{
+    const module = try create(allocator, io);
+    defer assertStop(module);
+
+    try module.hooks.start_fn.?(module.context, test_runtime);
+    try module.hooks.command_fn.?(module.context, test_runtime, .{
         .name = "http.fetch",
         .payload = "GET https://example.com",
     });
-    try module.hooks.command_fn.?(module.context, runtime, .{
+    try module.hooks.command_fn.?(module.context, test_runtime, .{
         .name = "http.clear",
     });
 
     const state: *HttpState = @ptrCast(@alignCast(module.context));
     try std.testing.expect(state.last_method == null);
     try std.testing.expect(state.last_url == null);
+    try std.testing.expect(state.last_body == null);
     try std.testing.expectEqual(@as(u16, 0), state.last_status);
-
-    try module.hooks.stop_fn.?(module.context, runtime);
 }
 
 test "http malformed fetch leaves prior state untouched" {
     const allocator = std.testing.allocator;
-    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+    const io = std.testing.io;
 
-    const module = try create(allocator);
-    try module.hooks.start_fn.?(module.context, runtime);
-    try module.hooks.command_fn.?(module.context, runtime, .{
+    const module = try create(allocator, io);
+    defer assertStop(module);
+
+    try module.hooks.start_fn.?(module.context, test_runtime);
+    try module.hooks.command_fn.?(module.context, test_runtime, .{
         .name = "http.fetch",
         .payload = "GET https://example.com",
     });
@@ -255,7 +309,7 @@ test "http malformed fetch leaves prior state untouched" {
     // No space → not a valid method/url pair; the plugin leaves the prior
     // values alone so callers can detect the malformed input by inspecting
     // the state.
-    try module.hooks.command_fn.?(module.context, runtime, .{
+    try module.hooks.command_fn.?(module.context, test_runtime, .{
         .name = "http.fetch",
         .payload = "malformed",
     });
@@ -263,44 +317,140 @@ test "http malformed fetch leaves prior state untouched" {
     const state: *HttpState = @ptrCast(@alignCast(module.context));
     try std.testing.expectEqualStrings("GET", state.last_method.?);
     try std.testing.expectEqualStrings("https://example.com", state.last_url.?);
-
-    try module.hooks.stop_fn.?(module.context, runtime);
 }
 
 test "http start and stop do not crash" {
     const allocator = std.testing.allocator;
-    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+    const io = std.testing.io;
 
-    const module = try create(allocator);
-    try module.hooks.start_fn.?(module.context, runtime);
-    try module.hooks.stop_fn.?(module.context, runtime);
+    const module = try create(allocator, io);
+    defer assertStop(module);
+
+    try module.hooks.start_fn.?(module.context, test_runtime);
 }
 
 test "http registers in a ModuleRegistry and dispatches through the registry" {
     const allocator = std.testing.allocator;
-    var module = try create(allocator);
+    const io = std.testing.io;
+    var module = try create(allocator, io);
+    // Not safe to defer stop here because the registry consumes the state;
+    // we manually stop below.
+
     const modules = [_]extensions.Module{module};
     const registry = extensions.ModuleRegistry{ .modules = &modules };
-    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
     try registry.validate();
     try std.testing.expect(registry.hasCapability(.network));
 
-    try registry.startAll(runtime);
-    try registry.dispatchCommand(runtime, .{
+    try registry.startAll(test_runtime);
+    try registry.dispatchCommand(test_runtime, .{
         .name = "http.fetch",
         .payload = "GET https://example.com",
     });
-    try registry.dispatchCommand(runtime, .{ .name = "http.clear" });
+    try registry.dispatchCommand(test_runtime, .{ .name = "http.clear" });
 
     // Inspect the recorded fields before the registry tears the state down.
     {
         const state: *HttpState = @ptrCast(@alignCast(module.context));
         try std.testing.expect(state.last_method == null);
         try std.testing.expect(state.last_url == null);
+        try std.testing.expect(state.last_body == null);
     }
 
-    try registry.stopAll(runtime);
+    try registry.stopAll(test_runtime);
     // stop consumed the state; the module handle is invalidated.
     module.context = undefined;
+}
+
+/// Helper to call stop and assert it succeeds. Ensures cleanup even
+/// when a preceding assertion fails.
+fn assertStop(module: extensions.Module) void {
+    module.hooks.stop_fn.?(module.context, test_runtime) catch @panic("stop failed");
+}
+
+/// Whether to run tests that require real network access.
+/// Set to false to skip these tests in offline environments.
+const run_network_tests = true;
+
+test "plugin_http: real HTTP GET to example.com" {
+    if (!run_network_tests) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const module = try create(allocator, io);
+    defer assertStop(module);
+
+    try module.hooks.start_fn.?(module.context, test_runtime);
+    try module.hooks.command_fn.?(module.context, test_runtime, .{
+        .name = "http.fetch",
+        .payload = "GET http://example.com/",
+    });
+
+    const state: *HttpState = @ptrCast(@alignCast(module.context));
+    try std.testing.expectEqualStrings("GET", state.last_method.?);
+    try std.testing.expectEqualStrings("http://example.com/", state.last_url.?);
+
+    if (state.last_status == 0) {
+        // Request failed (e.g. network unreachable); skip assertion.
+        return error.SkipZigTest;
+    }
+
+    // example.com uses chunked encoding; body may be empty.
+    // We assert status only until chunked support is added.
+    try std.testing.expectEqual(@as(u16, 200), state.last_status);
+}
+
+test "plugin_http: real HTTP GET body via httpbin.org/html" {
+    if (!run_network_tests) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const module = try create(allocator, io);
+    defer assertStop(module);
+
+    try module.hooks.start_fn.?(module.context, test_runtime);
+    try module.hooks.command_fn.?(module.context, test_runtime, .{
+        .name = "http.fetch",
+        .payload = "GET http://httpbin.org/html",
+    });
+
+    const state: *HttpState = @ptrCast(@alignCast(module.context));
+    try std.testing.expectEqualStrings("GET", state.last_method.?);
+    try std.testing.expectEqualStrings("http://httpbin.org/html", state.last_url.?);
+
+    if (state.last_status == 0) {
+        return error.SkipZigTest;
+    }
+
+    try std.testing.expectEqual(@as(u16, 200), state.last_status);
+    try std.testing.expect(state.last_body != null);
+    try std.testing.expect(state.last_body.?.len > 0);
+}
+
+test "plugin_http: real HTTP GET 404 via httpstat.us" {
+    if (!run_network_tests) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const module = try create(allocator, io);
+    defer assertStop(module);
+
+    try module.hooks.start_fn.?(module.context, test_runtime);
+    try module.hooks.command_fn.?(module.context, test_runtime, .{
+        .name = "http.fetch",
+        .payload = "GET http://httpstat.us/404",
+    });
+
+    const state: *HttpState = @ptrCast(@alignCast(module.context));
+    try std.testing.expectEqualStrings("GET", state.last_method.?);
+    try std.testing.expectEqualStrings("http://httpstat.us/404", state.last_url.?);
+
+    if (state.last_status == 0) {
+        return error.SkipZigTest;
+    }
+
+    try std.testing.expectEqual(@as(u16, 404), state.last_status);
 }

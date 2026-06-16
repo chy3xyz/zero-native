@@ -3,7 +3,12 @@
     .fingerprint = 0x338d08a1e3dd81aa,
     .version = "0.1.0",
     .minimum_zig_version = "0.17.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .httpz = .{
+            .url = "git+https://github.com/chy3xyz/httpz.zig#9d9029d39086c4cde41199ec1b8885d54698b520",
+            .hash = "httpz-0.4.0-GHOr_HA4CQDedqSxh36R9EXuhSSKDzPgzyZqcdZWaw0p",
+        },
+    },
     .paths = .{
         "README.md",
         "CHANGELOG.md",
