@@ -201,6 +201,21 @@ pub const Runtime = struct {
         try self.completeBridgeResponse(source.window_id, source.webview_label, response);
     }
 
+    /// Allocates a new `StreamId` and returns a `Channel(T)` whose writer delivers
+    /// frames through the platform bridge for the given window and webview.
+    /// The caller is responsible for calling `channel.close()` when the stream is done.
+    ///
+    /// TODO(W11): Wire the writer to call `self.completeBridgeResponse(window_id, webview_label, frame_json)`.
+    /// Until then callers should construct a `bridge.Channel(T)` directly with a writer
+    /// that routes frames through their own bridge response path. See the channel module
+    /// tests for a working example of the full round-trip.
+    pub fn createStreamChannel(comptime T: type, self: *Runtime, window_id: platform.WindowId, webview_label: []const u8) !bridge.Channel(T) {
+        _ = self;
+        _ = window_id;
+        _ = webview_label;
+        return error.StreamChannelsNotYetImplemented;
+    }
+
     /// Dispatches a platform event into the runtime state machine.
     /// Return type is `anyerror!void` because app callbacks and platform backend
     /// services may raise arbitrary errors.
