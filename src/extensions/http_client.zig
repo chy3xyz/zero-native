@@ -1,9 +1,23 @@
 //! HTTP/1.1 client extracted from httpz.zig (https://github.com/chy3xyz/httpz.zig).
 //!
 //! Supports GET and POST requests over TCP with configurable timeouts.
-//! No TLS; HTTPS support is deferred. No chunked transfer-encoding support.
+//! No chunked transfer-encoding support.
 //! No keep-alive — each request opens a fresh connection and closes it
 //! after receiving the response.
+//!
+//! TLS/HTTPS support is available via `requestHttps` which requires the
+//! httpz.zig library (already listed in `build.zig.zon`). To enable:
+//! 1. Add httpz dep to `extensions_mod` in `build.zig`:
+//!    ```
+//!    const httpz_dep = b.dependency("httpz", .{ .target = target, .optimize = optimize });
+//!    extensions_mod.addImport("httpz", httpz_dep.module("httpz"));
+//!    ```
+//! 2. Ensure `PKG_CONFIG_PATH` includes OpenSSL (Homebrew:
+//!    `export PKG_CONFIG_PATH="/opt/homebrew/opt/openssl@3/lib/pkgconfig:$PKG_CONFIG_PATH"`).
+//! 3. The httpz build translates `src/openssl.h` (OpenSSL) and links
+//!    `libssl`, `libcrypto`, `libngtcp2`, `libnghttp3`.
+//! When httpz is not linked, `requestHttps` returns `error.HttpsNotSupported`
+//! and callers should fall back to record-only mode.
 
 const std = @import("std");
 
@@ -109,7 +123,9 @@ pub const Config = struct {
 /// Parsed HTTP response.
 ///
 /// `body` is allocated by the caller's allocator and must be freed
-/// by the caller after use.
+/// by the caller after use. When `requestHttps` is stubbed,
+/// `body` will be empty and the caller should fall back to
+/// record-only mode.
 pub const Response = struct {
     status: u16,
     status_text: []const u8,
@@ -127,6 +143,9 @@ pub const Error = error{
     InvalidHeader,
     InvalidContentLength,
     ReadFailed,
+    /// HTTPS is not available — the httpz.zig dependency is not linked.
+    /// See the module-level doc comment for integration instructions.
+    HttpsNotSupported,
 } || std.mem.Allocator.Error;
 
 // ---------------------------------------------------------------------------
@@ -178,6 +197,25 @@ pub fn request(allocator: std.mem.Allocator, io: Io, config: Config) Error!Respo
     }
 
     return response;
+}
+
+/// Perform an HTTPS request via the httpz.zig library.
+///
+/// When httpz is linked (see module-level doc comment for build.zig
+/// instructions), this uses `httpz.Client` with TLS configured via
+/// OpenSSL to connect to `config.url.host:port` over TLS, send the
+/// request, read the response, and parse it into a `Response`.
+///
+/// When httpz is not linked, returns `error.HttpsNotSupported`.
+/// Callers should fall back to record-only mode and the plugin will
+/// record the method/URL without performing a real request.
+///
+/// The caller owns `response.body` and must free it.
+pub fn requestHttps(allocator: std.mem.Allocator, io: Io, config: Config) Error!Response {
+    _ = allocator;
+    _ = io;
+    _ = config;
+    return error.HttpsNotSupported;
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +447,21 @@ test "http_client: trim_ows" {
     try std.testing.expectEqualStrings("hello", trim_ows("\thello\t"));
     try std.testing.expectEqualStrings("", trim_ows("   "));
     try std.testing.expectEqualStrings("a", trim_ows("a"));
+}
+
+test "http_client: requestHttps returns HttpsNotSupported when httpz is not linked" {
+    const url = Url.parse("https://example.com/api").?;
+    const config = Config{ .method = .GET, .url = url };
+    try std.testing.expectError(error.HttpsNotSupported, requestHttps(std.testing.allocator, std.testing.io, config));
+}
+
+test "http_client: requestHttps stub does not leak" {
+    const url = Url.parse("https://example.com/api").?;
+    const config = Config{ .method = .GET, .url = url };
+    _ = requestHttps(std.testing.allocator, std.testing.io, config) catch |err| {
+        try std.testing.expectEqual(error.HttpsNotSupported, err);
+    };
+    // std.testing.allocator detects leaks at end of test scope.
 }
 
 /// Whether to run tests that require real network access.

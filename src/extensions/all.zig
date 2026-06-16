@@ -11,4 +11,7 @@ test {
     _ = @import("plugin_notification.zig");
     _ = @import("plugin_http.zig");
     _ = @import("plugin_store.zig");
+    _ = @import("plugin_deep_link.zig");
+    _ = @import("plugin_single_instance.zig");
+    _ = @import("plugin_autostart.zig");
 }

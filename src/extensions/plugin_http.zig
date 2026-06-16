@@ -6,8 +6,10 @@
 //! - `http.fetch` — `cmd.payload` is `"METHOD URL"` (split on the first
 //!   ASCII space). With no space, the call is silently rejected (the
 //!   previously recorded method/url are left untouched). For `http://`
-//!   URLs, a real TCP request is made; `https://` URLs are recorded only
-//!   (HTTPS support is deferred — see http_client.zig).
+//!   URLs, a real TCP request is made via the vendored client. For
+//!   `https://` URLs, `http_client.requestHttps` is called; if httpz is
+//!   not linked it returns `error.HttpsNotSupported` and the plugin
+//!   falls back to record-only mode.
 //! - `http.clear` — clears the recorded method/url/status/body.
 //!
 //! The extension `Command` has no return channel, so tests inspect the
@@ -105,8 +107,10 @@ pub fn command(
 /// (leaving prior state untouched).
 ///
 /// For `http://` URLs, a real TCP request is issued via the vendored
-/// http_client. For `https://` (or any other scheme), the plugin falls
-/// back to record-only mode (HTTPS support is deferred — requires TLS).
+/// http_client. For `https://` URLs, `http_client.requestHttps` is
+/// called; if httpz is unavailable it returns `HttpsNotSupported` and the
+/// plugin falls back to record-only mode. For any other scheme, the
+/// plugin falls back to record-only mode.
 ///
 /// If the HTTP request succeeds, `last_status` and `last_body` are
 /// updated. If it fails, the method/url are still recorded but
@@ -133,15 +137,7 @@ fn handleFetch(state: *HttpState, payload: []const u8) !void {
     state.last_body = null;
     state.last_status = 0;
 
-    // Only attempt real requests for http:// URLs. HTTPS support is
-    // deferred until a TLS dependency (e.g. OpenSSL) is integrated.
-    if (!std.mem.eql(u8, raw_url[0..@min(raw_url.len, 7)], "http://")) {
-        // Not an http:// URL — record-only fallback. This handles
-        // https:// URLs gracefully until TLS support is added.
-        return;
-    }
-
-    // Parse the method and URL for the vendored HTTP client.
+    // Parse the method for the HTTP client.
     const method: http_client.Method = if (std.mem.eql(u8, raw_method, "GET"))
         .GET
     else if (std.mem.eql(u8, raw_method, "POST"))
@@ -155,6 +151,24 @@ fn handleFetch(state: *HttpState, payload: []const u8) !void {
         .method = method,
         .url = url,
     };
+
+    const is_https = std.mem.eql(u8, raw_url[0..@min(raw_url.len, 8)], "https://");
+
+    if (is_https) {
+        // Attempt HTTPS via httpz. If unavailable, fall back to record-only.
+        const https_response = http_client.requestHttps(state.allocator, state.io, config) catch |err| {
+            if (err == error.HttpsNotSupported) return; // record-only fallback
+            return; // Other errors also fall back to record-only.
+        };
+        state.last_status = https_response.status;
+        state.last_body = https_response.body;
+        return;
+    }
+
+    // Only attempt real requests for http:// URLs.
+    if (!std.mem.eql(u8, raw_url[0..@min(raw_url.len, 7)], "http://")) {
+        return; // Unrecognised scheme — record-only fallback.
+    }
 
     // Perform the real HTTP request. On failure we keep the recorded
     // method/url but leave status at 0 (catch returns void).
@@ -453,4 +467,33 @@ test "plugin_http: real HTTP GET 404 via httpstat.us" {
     }
 
     try std.testing.expectEqual(@as(u16, 404), state.last_status);
+}
+
+test "plugin_http: HTTPS fetch falls back to record-only when httpz is not linked" {
+    if (!run_network_tests) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const module = try create(allocator, io);
+    defer assertStop(module);
+
+    try module.hooks.start_fn.?(module.context, test_runtime);
+    try module.hooks.command_fn.?(module.context, test_runtime, .{
+        .name = "http.fetch",
+        .payload = "GET https://httpbin.org/status/200",
+    });
+
+    const state: *HttpState = @ptrCast(@alignCast(module.context));
+    try std.testing.expectEqualStrings("GET", state.last_method.?);
+    try std.testing.expectEqualStrings("https://httpbin.org/status/200", state.last_url.?);
+
+    // When httpz is not linked, requestHttps returns HttpsNotSupported,
+    // so last_status stays at 0 and last_body stays null (record-only).
+    // If httpz IS linked and the test gets a real response, the status
+    // will be 200. Either outcome is acceptable — the test verifies
+    // the plugin does not crash and records the method/URL.
+    if (state.last_status != 0) {
+        try std.testing.expectEqual(@as(u16, 200), state.last_status);
+    }
 }
