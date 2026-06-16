@@ -2,6 +2,8 @@ const std = @import("std");
 const app_manifest = @import("app_manifest");
 const diagnostics = @import("diagnostics");
 const raw_manifest = @import("raw_manifest.zig");
+const security_pkg = @import("security");
+const capability = security_pkg.capability;
 const web_engine_tool = @import("web_engine.zig");
 
 pub const ValidationResult = struct {
@@ -17,7 +19,15 @@ pub const Metadata = struct {
     icons: []const []const u8 = &.{},
     platforms: []const []const u8 = &.{},
     permissions: []const []const u8 = &.{},
-    capabilities: []const []const u8 = &.{},
+    /// Package-level feature flags such as `"webview"` and `"js_bridge"`.
+    /// These feed the `app_manifest.Capability` union validation and are
+    /// distinct from the structured `capabilities` field, which carries
+    /// per-window security policies consumed at runtime.
+    feature_capabilities: []const []const u8 = &.{},
+    /// Structured per-window security capabilities. Each entry carries a
+    /// unique identifier, the windows it applies to, and the granular
+    /// permissions with allow/deny scope globs.
+    capabilities: []const capability.Capability = &.{},
     bridge_commands: []const BridgeCommandMetadata = &.{},
     web_engine: []const u8 = "system",
     cef: web_engine_tool.CefConfig = .{},
@@ -42,7 +52,9 @@ pub const Metadata = struct {
         if (self.platforms.len > 0) allocator.free(self.platforms);
         for (self.permissions) |value| allocator.free(value);
         if (self.permissions.len > 0) allocator.free(self.permissions);
-        for (self.capabilities) |value| allocator.free(value);
+        for (self.feature_capabilities) |value| allocator.free(value);
+        if (self.feature_capabilities.len > 0) allocator.free(self.feature_capabilities);
+        for (self.capabilities) |cap| deinitCapability(allocator, cap);
         if (self.capabilities.len > 0) allocator.free(self.capabilities);
         for (self.bridge_commands) |command| {
             allocator.free(command.name);
@@ -64,8 +76,11 @@ pub const Metadata = struct {
         }
         for (self.security.navigation.allowed_origins) |value| allocator.free(value);
         if (self.security.navigation.allowed_origins.len > 0) allocator.free(self.security.navigation.allowed_origins);
-        // `action` is always heap-owned after `parseText`, so it is freed unconditionally.
-        allocator.free(self.security.navigation.external_links.action);
+        // `action` is heap-owned after a successful `parseText`, so it is
+        // freed here. The `&.{}` constant in the errdefer path is not
+        // freed (it is a read-only sentinel with `.len == 0`).
+        if (self.security.navigation.external_links.action.len > 0)
+            allocator.free(self.security.navigation.external_links.action);
         for (self.security.navigation.external_links.allowed_urls) |value| allocator.free(value);
         if (self.security.navigation.external_links.allowed_urls.len > 0) allocator.free(self.security.navigation.external_links.allowed_urls);
         for (self.windows) |window| {
@@ -129,6 +144,10 @@ const RawSecurity = raw_manifest.RawSecurity;
 const RawNavigation = raw_manifest.RawNavigation;
 const RawExternalLinks = raw_manifest.RawExternalLinks;
 const RawWindow = raw_manifest.RawWindow;
+const RawSecurityCapability = raw_manifest.RawSecurityCapability;
+const RawSecurityPermission = raw_manifest.RawSecurityPermission;
+const RawSecurityScopeSet = raw_manifest.RawSecurityScopeSet;
+const RawSecurityScope = raw_manifest.RawSecurityScope;
 
 pub fn validateFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !ValidationResult {
     const source = try readFile(allocator, io, path);
@@ -140,15 +159,17 @@ pub fn validateFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) 
     validateIconPaths(metadata.icons) catch return .{ .ok = false, .message = "app.zon icons are invalid" };
     const permissions = parsePermissions(allocator, metadata.permissions) catch return .{ .ok = false, .message = "app.zon permissions are invalid" };
     defer allocator.free(permissions);
-    const capabilities = parseCapabilities(allocator, metadata.capabilities) catch return .{ .ok = false, .message = "app.zon capabilities are invalid" };
-    defer allocator.free(capabilities);
+    const feature_capabilities = parseCapabilities(allocator, metadata.feature_capabilities) catch return .{ .ok = false, .message = "app.zon feature_capabilities are invalid" };
+    defer {
+        if (feature_capabilities.len > 0) allocator.free(feature_capabilities);
+    }
     const bridge_commands = parseBridgeCommands(allocator, metadata.bridge_commands) catch return .{ .ok = false, .message = "app.zon bridge commands are invalid" };
     defer {
         for (bridge_commands) |command| allocator.free(command.permissions);
         allocator.free(bridge_commands);
     }
     const frontend = if (metadata.frontend) |frontend_value| convertFrontend(frontend_value) else null;
-    const security = convertSecurity(metadata.security) catch return .{ .ok = false, .message = "app.zon security policy is invalid" };
+    const parsed_security = convertSecurity(metadata.security) catch return .{ .ok = false, .message = "app.zon security policy is invalid" };
     const windows = try convertWindows(allocator, metadata.windows);
     defer allocator.free(windows);
     const manifest_web_engine = parseWebEngine(metadata.web_engine) catch return .{ .ok = false, .message = "app.zon web engine is invalid" };
@@ -157,10 +178,10 @@ pub fn validateFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) 
         .identity = .{ .id = metadata.id, .name = metadata.name, .display_name = metadata.display_name },
         .version = parseVersion(metadata.version) catch return .{ .ok = false, .message = "app.zon version is invalid" },
         .permissions = permissions,
-        .capabilities = capabilities,
+        .capabilities = feature_capabilities,
         .bridge = .{ .commands = bridge_commands },
         .frontend = frontend,
-        .security = security,
+        .security = parsed_security,
         .platforms = parsePlatformSettings(allocator, metadata.platforms) catch return .{ .ok = false, .message = "app.zon platforms are invalid" },
         .windows = windows,
         .cef = .{ .dir = metadata.cef.dir, .auto_install = metadata.cef.auto_install },
@@ -182,25 +203,63 @@ pub fn parseText(allocator: std.mem.Allocator, source: []const u8) !Metadata {
     const scratch = arena.allocator();
     const source_z = try scratch.dupeSentinel(u8, source, 0);
     const raw = try std.zon.parse.fromSliceAlloc(RawManifest, scratch, source_z, null, .{});
-    return .{
+    // Build the metadata in two passes and track the heap-allocated
+    // `action` separately: the only field that `Metadata.deinit` frees
+    // unconditionally. The pre-populated value uses `&.{}` (a read-only
+    // constant) so a premature `deinit` does not free garbage; the real
+    // `action` allocation is held in a local that the errdefer cleans up
+    // until it is committed by `convertRawSecurity`.
+    var metadata: Metadata = .{
         .id = try allocator.dupe(u8, raw.id),
         .name = try allocator.dupe(u8, raw.name),
         .display_name = if (raw.display_name) |value| try allocator.dupe(u8, value) else null,
         .version = try allocator.dupe(u8, raw.version),
-        .icons = try duplicateStringList(allocator, raw.icons),
-        .platforms = try duplicateStringList(allocator, raw.platforms),
-        .permissions = try duplicateStringList(allocator, raw.permissions),
-        .capabilities = try duplicateStringList(allocator, raw.capabilities),
-        .bridge_commands = try convertRawBridgeCommands(allocator, raw.bridge.commands),
+        .icons = &.{},
+        .platforms = &.{},
+        .permissions = &.{},
+        .feature_capabilities = &.{},
+        .capabilities = &.{},
+        .bridge_commands = &.{},
         .web_engine = try allocator.dupe(u8, raw.web_engine),
         .cef = .{
             .dir = try allocator.dupe(u8, raw.cef.dir),
             .auto_install = raw.cef.auto_install,
         },
-        .frontend = try convertRawFrontend(allocator, raw.frontend),
-        .security = try convertRawSecurity(allocator, raw.security),
-        .windows = try convertRawWindows(allocator, raw.windows),
+        .frontend = null,
+        .security = .{
+            .navigation = .{
+                .allowed_origins = &.{},
+                .external_links = .{
+                    // Sentinel: `deinit` checks `action_was_allocated` and
+                    // skips freeing this empty constant.
+                    .action = &.{},
+                    .allowed_urls = &.{},
+                },
+            },
+        },
+        .windows = &.{},
     };
+    errdefer metadata.deinit(allocator);
+    metadata.icons = try duplicateStringList(allocator, raw.icons);
+    metadata.platforms = try duplicateStringList(allocator, raw.platforms);
+    metadata.permissions = try duplicateStringList(allocator, raw.permissions);
+    metadata.feature_capabilities = try duplicateStringList(allocator, raw.feature_capabilities);
+    metadata.capabilities = try convertRawSecurityCapabilities(allocator, raw.capabilities);
+    metadata.bridge_commands = try convertRawBridgeCommands(allocator, raw.bridge.commands);
+    metadata.frontend = try convertRawFrontend(allocator, raw.frontend);
+    const action = try allocator.dupe(u8, raw.security.navigation.external_links.action);
+    errdefer allocator.free(action);
+    metadata.security = .{
+        .navigation = .{
+            .allowed_origins = try duplicateStringList(allocator, raw.security.navigation.allowed_origins),
+            .external_links = .{
+                .action = action,
+                .allowed_urls = try duplicateStringList(allocator, raw.security.navigation.external_links.allowed_urls),
+            },
+        },
+    };
+    metadata.windows = try convertRawWindows(allocator, raw.windows);
+    return metadata;
 }
 
 fn duplicateStringList(allocator: std.mem.Allocator, values: []const []const u8) ![]const []const u8 {
@@ -225,6 +284,114 @@ fn convertRawBridgeCommands(allocator: std.mem.Allocator, commands: []const RawB
     return converted;
 }
 
+/// Converts a list of raw structured capabilities into the runtime
+/// `capability.Capability` representation. Every string and slice is
+/// duplicated into `allocator`; the caller must release them via
+/// `Capability.deinit` plus a final `allocator.free` of the top-level
+/// slice.
+fn convertRawSecurityCapabilities(
+    allocator: std.mem.Allocator,
+    raw: []const RawSecurityCapability,
+) ![]const capability.Capability {
+    if (raw.len == 0) return &.{};
+    const converted = try allocator.alloc(capability.Capability, raw.len);
+    var populated: usize = 0;
+    errdefer {
+        for (converted[0..populated]) |cap| deinitCapability(allocator, cap);
+        allocator.free(converted);
+    }
+    for (raw, 0..) |source, index| {
+        // Build the struct field-by-field so an errdefer inside the loop
+        // can free the partial fields if a later one fails. The whole
+        // `converted[index]` is only assigned once every field has been
+        // allocated.
+        var cap: capability.Capability = .{
+            .identifier = try allocator.dupe(u8, source.identifier),
+            .description = try allocator.dupe(u8, source.description),
+            .windows = &.{},
+            .permissions = &.{},
+        };
+        errdefer deinitCapability(allocator, cap);
+        cap.windows = try duplicateStringList(allocator, source.windows);
+        cap.permissions = try convertRawSecurityPermissions(allocator, source.permissions);
+        converted[index] = cap;
+        populated = index + 1;
+    }
+    return converted;
+}
+
+fn convertRawSecurityPermissions(
+    allocator: std.mem.Allocator,
+    raw: []const RawSecurityPermission,
+) ![]const capability.Permission {
+    if (raw.len == 0) return &.{};
+    const converted = try allocator.alloc(capability.Permission, raw.len);
+    var populated: usize = 0;
+    errdefer {
+        for (converted[0..populated]) |perm| {
+            allocator.free(perm.identifier);
+            for (perm.scopes.allow) |scope| allocator.free(scope.pattern);
+            if (perm.scopes.allow.len > 0) allocator.free(perm.scopes.allow);
+            for (perm.scopes.deny) |scope| allocator.free(scope.pattern);
+            if (perm.scopes.deny.len > 0) allocator.free(perm.scopes.deny);
+        }
+        allocator.free(converted);
+    }
+    for (raw, 0..) |source, index| {
+        // Build the permission field-by-field so an errdefer can free the
+        // partial fields (identifier) if the scope conversion fails.
+        var perm: capability.Permission = .{
+            .identifier = try allocator.dupe(u8, source.identifier),
+            .scopes = .{},
+        };
+        errdefer allocator.free(perm.identifier);
+        perm.scopes = try convertRawSecurityScopeSet(allocator, source.scopes);
+        converted[index] = perm;
+        populated = index + 1;
+    }
+    return converted;
+}
+
+fn convertRawSecurityScopeSet(
+    allocator: std.mem.Allocator,
+    raw: RawSecurityScopeSet,
+) !capability.ScopeSet {
+    const allow = try convertRawSecurityScopes(allocator, raw.allow);
+    errdefer {
+        for (allow) |scope| allocator.free(scope.pattern);
+        if (allow.len > 0) allocator.free(allow);
+    }
+    const deny = try convertRawSecurityScopes(allocator, raw.deny);
+    return .{ .allow = allow, .deny = deny };
+}
+
+fn convertRawSecurityScopes(
+    allocator: std.mem.Allocator,
+    raw: []const RawSecurityScope,
+) ![]const capability.Scope {
+    if (raw.len == 0) return &.{};
+    const converted = try allocator.alloc(capability.Scope, raw.len);
+    var populated: usize = 0;
+    errdefer {
+        for (converted[0..populated]) |scope| allocator.free(scope.pattern);
+        allocator.free(converted);
+    }
+    for (raw, 0..) |source, index| {
+        converted[index] = .{
+            .kind = parseScopeKind(source.kind) orelse return error.InvalidScopeKind,
+            .pattern = try allocator.dupe(u8, source.pattern),
+        };
+        populated = index + 1;
+    }
+    return converted;
+}
+
+fn parseScopeKind(value: []const u8) ?capability.ScopeKind {
+    if (std.mem.eql(u8, value, "path")) return .path;
+    if (std.mem.eql(u8, value, "url")) return .url;
+    return null;
+}
+
 fn convertRawFrontend(allocator: std.mem.Allocator, frontend: ?RawFrontend) !?FrontendMetadata {
     const value = frontend orelse return null;
     return .{
@@ -240,14 +407,14 @@ fn convertRawFrontend(allocator: std.mem.Allocator, frontend: ?RawFrontend) !?Fr
     };
 }
 
-fn convertRawSecurity(allocator: std.mem.Allocator, security: RawSecurity) !SecurityMetadata {
+fn convertRawSecurity(allocator: std.mem.Allocator, raw: RawSecurity) !SecurityMetadata {
     // `action` is always heap-owned so that `Metadata.deinit` can unconditionally free it.
     return .{
         .navigation = .{
-            .allowed_origins = try duplicateStringList(allocator, security.navigation.allowed_origins),
+            .allowed_origins = try duplicateStringList(allocator, raw.navigation.allowed_origins),
             .external_links = .{
-                .action = try allocator.dupe(u8, security.navigation.external_links.action),
-                .allowed_urls = try duplicateStringList(allocator, security.navigation.external_links.allowed_urls),
+                .action = try allocator.dupe(u8, raw.navigation.external_links.action),
+                .allowed_urls = try duplicateStringList(allocator, raw.navigation.external_links.allowed_urls),
             },
         },
     };
@@ -268,6 +435,24 @@ fn convertRawWindows(allocator: std.mem.Allocator, windows: []const RawWindow) !
         };
     }
     return converted;
+}
+
+/// Frees a capability plus all of its owned strings/arrays. The capability
+/// value is consumed by value so callers iterating over a `const` slice
+/// (typical for `Metadata.capabilities`) do not need a mutable pointer.
+fn deinitCapability(allocator: std.mem.Allocator, cap: capability.Capability) void {
+    allocator.free(cap.identifier);
+    allocator.free(cap.description);
+    for (cap.windows) |window| allocator.free(window);
+    if (cap.windows.len > 0) allocator.free(cap.windows);
+    for (cap.permissions) |perm| {
+        allocator.free(perm.identifier);
+        for (perm.scopes.allow) |scope| allocator.free(scope.pattern);
+        if (perm.scopes.allow.len > 0) allocator.free(perm.scopes.allow);
+        for (perm.scopes.deny) |scope| allocator.free(scope.pattern);
+        if (perm.scopes.deny.len > 0) allocator.free(perm.scopes.deny);
+    }
+    if (cap.permissions.len > 0) allocator.free(cap.permissions);
 }
 
 pub fn parseVersion(value: []const u8) !app_manifest.Version {
@@ -313,13 +498,13 @@ fn convertFrontend(frontend: FrontendMetadata) app_manifest.FrontendConfig {
     };
 }
 
-fn convertSecurity(security: SecurityMetadata) !app_manifest.SecurityConfig {
+fn convertSecurity(metadata_security: SecurityMetadata) !app_manifest.SecurityConfig {
     return .{
         .navigation = .{
-            .allowed_origins = if (security.navigation.allowed_origins.len > 0) security.navigation.allowed_origins else &.{ "zero://app", "zero://inline" },
+            .allowed_origins = if (metadata_security.navigation.allowed_origins.len > 0) metadata_security.navigation.allowed_origins else &.{ "zero://app", "zero://inline" },
             .external_links = .{
-                .action = parseExternalLinkAction(security.navigation.external_links.action) catch return error.InvalidSecurity,
-                .allowed_urls = security.navigation.external_links.allowed_urls,
+                .action = parseExternalLinkAction(metadata_security.navigation.external_links.action) catch return error.InvalidSecurity,
+                .allowed_urls = metadata_security.navigation.external_links.allowed_urls,
             },
         },
     };
@@ -470,7 +655,7 @@ test "manifest metadata parser reads identity version and lists" {
         \\  .version = "1.2.3",
         \\  .icons = .{ "assets/icon.png" },
         \\  .platforms = .{ "macos", "linux" },
-        \\  .capabilities = .{ "native_module", "webview", "js_bridge" },
+        \\  .feature_capabilities = .{ "native_module", "webview", "js_bridge" },
         \\  .bridge = .{ .commands = .{ .{ .name = "native.ping" } } },
         \\  .web_engine = "chromium",
         \\  .cef = .{ .dir = "third_party/cef/macos", .auto_install = true },
@@ -484,7 +669,7 @@ test "manifest metadata parser reads identity version and lists" {
     try std.testing.expectEqualStrings("1.2.3", metadata.version);
     try std.testing.expectEqualStrings("assets/icon.png", metadata.icons[0]);
     try std.testing.expectEqualStrings("linux", metadata.platforms[1]);
-    try std.testing.expectEqualStrings("webview", metadata.capabilities[1]);
+    try std.testing.expectEqualStrings("webview", metadata.feature_capabilities[1]);
     try std.testing.expectEqualStrings("native.ping", metadata.bridge_commands[0].name);
     try std.testing.expectEqualStrings("chromium", metadata.web_engine);
     try std.testing.expectEqualStrings("third_party/cef/macos", metadata.cef.dir);
@@ -576,9 +761,47 @@ test "Metadata.deinit frees all owned fields" {
     errdefer allocator.free(permissions);
     permissions[0] = try allocator.dupe(u8, "window");
 
-    const capabilities = try allocator.alloc([]const u8, 1);
+    const feature_capabilities = try allocator.alloc([]const u8, 1);
+    errdefer allocator.free(feature_capabilities);
+    feature_capabilities[0] = try allocator.dupe(u8, "webview");
+
+    // Build a single structured capability so `Capability.deinit` runs.
+    const cap_id = try allocator.dupe(u8, "main-cap");
+    errdefer allocator.free(cap_id);
+    const cap_description = try allocator.dupe(u8, "main window capability");
+    errdefer allocator.free(cap_description);
+    const cap_windows_storage = try allocator.alloc([]const u8, 1);
+    cap_windows_storage[0] = try allocator.dupe(u8, "main");
+    errdefer {
+        for (cap_windows_storage) |value| allocator.free(value);
+        allocator.free(cap_windows_storage);
+    }
+    const perm_id = try allocator.dupe(u8, "fs:allow-read-text-file");
+    errdefer allocator.free(perm_id);
+    const allow_pattern = try allocator.dupe(u8, "$APPDATA/**");
+    errdefer allocator.free(allow_pattern);
+    const deny_pattern = try allocator.dupe(u8, "$APPDATA/secret/**");
+    errdefer allocator.free(deny_pattern);
+    const allow_scopes = try allocator.alloc(capability.Scope, 1);
+    allow_scopes[0] = .{ .kind = .path, .pattern = allow_pattern };
+    errdefer allocator.free(allow_scopes);
+    const deny_scopes = try allocator.alloc(capability.Scope, 1);
+    deny_scopes[0] = .{ .kind = .path, .pattern = deny_pattern };
+    errdefer allocator.free(deny_scopes);
+    const cap_permissions = try allocator.alloc(capability.Permission, 1);
+    cap_permissions[0] = .{
+        .identifier = perm_id,
+        .scopes = .{ .allow = allow_scopes, .deny = deny_scopes },
+    };
+    errdefer allocator.free(cap_permissions);
+    const capabilities = try allocator.alloc(capability.Capability, 1);
     errdefer allocator.free(capabilities);
-    capabilities[0] = try allocator.dupe(u8, "webview");
+    capabilities[0] = .{
+        .identifier = cap_id,
+        .description = cap_description,
+        .windows = cap_windows_storage,
+        .permissions = cap_permissions,
+    };
 
     const bridge_commands = try allocator.alloc(BridgeCommandMetadata, 1);
     errdefer allocator.free(bridge_commands);
@@ -612,7 +835,7 @@ test "Metadata.deinit frees all owned fields" {
     allowed_origins[1] = try allocator.dupe(u8, "https://example.com");
     const allowed_urls = try allocator.alloc([]const u8, 1);
     allowed_urls[0] = try allocator.dupe(u8, "https://example.com/*");
-    const security = SecurityMetadata{
+    const parsed_security = SecurityMetadata{
         .navigation = .{
             .allowed_origins = allowed_origins,
             .external_links = .{
@@ -642,12 +865,13 @@ test "Metadata.deinit frees all owned fields" {
         .icons = icons,
         .platforms = platforms,
         .permissions = permissions,
+        .feature_capabilities = feature_capabilities,
         .capabilities = capabilities,
         .bridge_commands = bridge_commands,
         .web_engine = web_engine,
         .cef = .{ .dir = cef_dir, .auto_install = true },
         .frontend = frontend,
-        .security = security,
+        .security = parsed_security,
         .windows = windows,
     };
 
@@ -665,4 +889,110 @@ test "Metadata.deinit frees default deny action" {
     defer metadata.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("deny", metadata.security.navigation.external_links.action);
+}
+
+test "manifest metadata parser reads structured capabilities" {
+    const metadata = try parseText(std.testing.allocator,
+        \\.{
+        \\  .id = "com.example.app",
+        \\  .name = "example",
+        \\  .version = "1.2.3",
+        \\  .capabilities = .{
+        \\    .{
+        \\      .identifier = "main-fs",
+        \\      .description = "main window filesystem access",
+        \\      .windows = .{ "main" },
+        \\      .permissions = .{
+        \\        .{
+        \\          .identifier = "fs:allow-read-text-file",
+        \\          .scopes = .{
+        \\            .allow = .{
+        \\              .{ .kind = "path", .pattern = "$APPDATA/**" },
+        \\            },
+        \\            .deny = .{
+        \\              .{ .kind = "path", .pattern = "$APPDATA/secret/**" },
+        \\            },
+        \\          },
+        \\        },
+        \\        .{
+        \\          .identifier = "network:allow-fetch",
+        \\          .scopes = .{
+        \\            .allow = .{
+        \\              .{ .kind = "url", .pattern = "https://api.example.com/**" },
+        \\            },
+        \\            .deny = .{
+        \\              .{ .kind = "url", .pattern = "https://api.example.com/internal/**" },
+        \\            },
+        \\          },
+        \\        },
+        \\      },
+        \\    },
+        \\    .{
+        \\      .identifier = "anywhere-fs",
+        \\      .windows = .{ "*" },
+        \\      .permissions = .{
+        \\        .{ .identifier = "fs:allow-read-text-file" },
+        \\      },
+        \\    },
+        \\  },
+        \\}
+    );
+    defer metadata.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), metadata.capabilities.len);
+
+    try std.testing.expectEqualStrings("main-fs", metadata.capabilities[0].identifier);
+    try std.testing.expectEqualStrings("main window filesystem access", metadata.capabilities[0].description);
+    try std.testing.expectEqual(@as(usize, 1), metadata.capabilities[0].windows.len);
+    try std.testing.expectEqualStrings("main", metadata.capabilities[0].windows[0]);
+    try std.testing.expectEqual(@as(usize, 2), metadata.capabilities[0].permissions.len);
+
+    const fs_perm = metadata.capabilities[0].permissions[0];
+    try std.testing.expectEqualStrings("fs:allow-read-text-file", fs_perm.identifier);
+    try std.testing.expectEqual(@as(usize, 1), fs_perm.scopes.allow.len);
+    try std.testing.expectEqual(capability.ScopeKind.path, fs_perm.scopes.allow[0].kind);
+    try std.testing.expectEqualStrings("$APPDATA/**", fs_perm.scopes.allow[0].pattern);
+    try std.testing.expectEqual(@as(usize, 1), fs_perm.scopes.deny.len);
+    try std.testing.expectEqual(capability.ScopeKind.path, fs_perm.scopes.deny[0].kind);
+    try std.testing.expectEqualStrings("$APPDATA/secret/**", fs_perm.scopes.deny[0].pattern);
+
+    const net_perm = metadata.capabilities[0].permissions[1];
+    try std.testing.expectEqualStrings("network:allow-fetch", net_perm.identifier);
+    try std.testing.expectEqual(@as(usize, 1), net_perm.scopes.allow.len);
+    try std.testing.expectEqual(capability.ScopeKind.url, net_perm.scopes.allow[0].kind);
+    try std.testing.expectEqualStrings("https://api.example.com/**", net_perm.scopes.allow[0].pattern);
+    try std.testing.expectEqualStrings("https://api.example.com/internal/**", net_perm.scopes.deny[0].pattern);
+
+    try std.testing.expectEqualStrings("anywhere-fs", metadata.capabilities[1].identifier);
+    try std.testing.expectEqualStrings("", metadata.capabilities[1].description);
+    try std.testing.expectEqualStrings("*", metadata.capabilities[1].windows[0]);
+    try std.testing.expectEqual(@as(usize, 1), metadata.capabilities[1].permissions.len);
+    try std.testing.expectEqualStrings("fs:allow-read-text-file", metadata.capabilities[1].permissions[0].identifier);
+    try std.testing.expectEqual(@as(usize, 0), metadata.capabilities[1].permissions[0].scopes.allow.len);
+    try std.testing.expectEqual(@as(usize, 0), metadata.capabilities[1].permissions[0].scopes.deny.len);
+}
+
+test "manifest metadata parser rejects invalid scope kind" {
+    const result = parseText(std.testing.allocator,
+        \\.{
+        \\  .id = "com.example.app",
+        \\  .name = "example",
+        \\  .version = "1.2.3",
+        \\  .capabilities = .{
+        \\    .{
+        \\      .identifier = "broken",
+        \\      .windows = .{ "main" },
+        \\      .permissions = .{
+        \\        .{
+        \\          .identifier = "fs:read",
+        \\          .scopes = .{
+        \\            .allow = .{ .{ .kind = "bogus", .pattern = "/x" } },
+        \\          },
+        \\        },
+        \\      },
+        \\    },
+        \\  },
+        \\}
+    );
+    try std.testing.expectError(error.InvalidScopeKind, result);
 }

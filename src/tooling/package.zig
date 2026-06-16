@@ -577,7 +577,7 @@ fn readPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
 }
 
 fn writeReport(allocator: std.mem.Allocator, dir: std.Io.Dir, io: std.Io, subpath: []const u8, options: PackageOptions, executable_name: []const u8, asset_count: usize) !void {
-    const capabilities = try capabilityLines(allocator, options.metadata.capabilities);
+    const capabilities = try capabilityLines(allocator, options.metadata.feature_capabilities);
     defer allocator.free(capabilities);
     const frontend = try frontendLines(allocator, options.frontend);
     defer allocator.free(frontend);

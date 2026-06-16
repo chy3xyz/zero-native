@@ -287,6 +287,11 @@ For dev servers, extend `connect-src` only to the local dev origin and WebSocket
       <td>Declared in <code>app.zon</code>, checked at runtime</td>
     </tr>
     <tr>
+      <td>Capabilities</td>
+      <td>Deny by default when declared</td>
+      <td>Per-window security policies with allow/deny scope globs (see <a href="/capabilities">Capabilities</a>)</td>
+    </tr>
+    <tr>
       <td>CSP</td>
       <td>Not enforced by zero-native</td>
       <td>Set in your HTML <code>&lt;meta&gt;</code> tag</td>

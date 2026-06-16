@@ -41,6 +41,7 @@ export const navSections: NavSection[] = [
       { name: "Updates", href: "/updates" },
       { name: "app.zon Reference", href: "/app-zon" },
       { name: "Manifest Reference", href: "/manifest" },
+      { name: "Capabilities", href: "/capabilities" },
     ],
   },
   {

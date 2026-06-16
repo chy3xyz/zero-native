@@ -421,6 +421,33 @@ pub const Runtime = struct {
         // Sync bridge dispatch path: log parse failures and policy denials
         // before delegating to the generic dispatcher.
         if (bridge.parseRequest(message.bytes)) |request| {
+            // Capability check (preferred path): when the manifest declares
+            // any capability, the per-window lookup is authoritative. A
+            // deny here short-circuits the dispatch.
+            if (self.options.security.capabilities.len > 0) {
+                const label = self.currentWindowLabel(message.window_id, "main");
+                if (!security.allowsCommandForWindow(
+                    self.options.security.capabilities,
+                    label,
+                    request.command,
+                    message.origin,
+                )) {
+                    self.log("security.command_denied", "sync bridge command denied by capability", &.{
+                        trace.string("command", request.command),
+                        trace.string("origin", message.origin),
+                        trace.string("window", label),
+                    }) catch {}; // trace write failures are best-effort
+                    const denied = bridge.writeErrorResponse(
+                        &response_buffer,
+                        request.id,
+                        .permission_denied,
+                        "Bridge command is not permitted",
+                    );
+                    try self.completeBridgeResponse(message.window_id, message.webview_label, denied);
+                    self.invalidateFor(.command, null);
+                    return;
+                }
+            }
             if (!dispatcher.policy.allows(request.command, message.origin)) {
                 self.log("bridge.command_denied", "sync bridge command denied by policy", &.{
                     trace.string("command", request.command),
@@ -457,6 +484,29 @@ pub const Runtime = struct {
             return false;
         };
         const handler = dispatcher.async_registry.find(request.command) orelse return false;
+        // Capability check (preferred path): when the manifest declares any
+        // capability, deny here rather than falling through to the legacy
+        // policy check. A deny writes the same `permission_denied` error
+        // response the legacy path would have written.
+        if (self.options.security.capabilities.len > 0) {
+            const label = self.currentWindowLabel(message.window_id, "main");
+            if (!security.allowsCommandForWindow(
+                self.options.security.capabilities,
+                label,
+                request.command,
+                message.origin,
+            )) {
+                self.log("security.command_denied", "async bridge command denied by capability", &.{
+                    trace.string("command", request.command),
+                    trace.string("origin", message.origin),
+                    trace.string("window", label),
+                }) catch {}; // trace write failures are best-effort
+                var response_buffer: [bridge.max_response_bytes]u8 = undefined;
+                const response = bridge.writeErrorResponse(&response_buffer, request.id, .permission_denied, "Bridge command is not permitted");
+                try self.completeBridgeResponse(message.window_id, message.webview_label, response);
+                return true;
+            }
+        }
         if (!dispatcher.policy.allows(request.command, message.origin)) {
             self.log("bridge.command_denied", "bridge command denied by policy", &.{
                 trace.string("command", request.command),
@@ -662,7 +712,7 @@ pub const Runtime = struct {
 
         var response_buffer: [bridge.max_response_bytes]u8 = undefined;
         var result_buffer: [bridge.max_result_bytes]u8 = undefined;
-        if (!self.allowsBuiltinBridgeCommand(request.command, message.origin, is_window or is_webview)) {
+        if (!self.allowsBuiltinBridgeCommand(request.command, message.origin, message.window_id, is_window or is_webview)) {
             const message_text = if (is_webview)
                 "WebView API is not permitted"
             else if (is_window)
@@ -696,7 +746,43 @@ pub const Runtime = struct {
         }
     }
 
-    fn allowsBuiltinBridgeCommand(self: *Runtime, command: []const u8, origin: []const u8, uses_window_permission: bool) bool {
+    /// Returns the label of the window with `window_id`, or `fallback` when
+    /// no such window is registered with the runtime. Used by the capability
+    /// check to resolve the "current window" for an incoming bridge message.
+    fn currentWindowLabel(self: *Runtime, window_id: platform.WindowId, fallback: []const u8) []const u8 {
+        if (self.findWindowIndexById(window_id)) |index| {
+            return self.windows[index].info.label;
+        }
+        return fallback;
+    }
+
+    fn allowsBuiltinBridgeCommand(
+        self: *Runtime,
+        command: []const u8,
+        origin: []const u8,
+        source_window_id: platform.WindowId,
+        uses_window_permission: bool,
+    ) bool {
+        // Capability check (preferred path): when the manifest declares any
+        // capability, the per-window lookup is authoritative and the legacy
+        // policy / origin checks below are skipped.
+        if (self.options.security.capabilities.len > 0) {
+            const label = self.currentWindowLabel(source_window_id, "main");
+            if (!security.allowsCommandForWindow(
+                self.options.security.capabilities,
+                label,
+                command,
+                origin,
+            )) {
+                self.log("security.command_denied", "builtin bridge command denied by capability", &.{
+                    trace.string("command", command),
+                    trace.string("origin", origin),
+                    trace.string("window", label),
+                }) catch {}; // trace write failures are best-effort
+                return false;
+            }
+            return true;
+        }
         var policy = self.options.builtin_bridge;
         if (self.options.security.permissions.len > 0) policy.permissions = self.options.security.permissions;
         if (policy.enabled) {
@@ -2339,6 +2425,83 @@ test "runtime returns bridge permission errors through platform response service
     } });
 
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"permission_denied\"") != null);
+}
+
+test "runtime enforces capabilities per window" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "cap-window", .source = platform.WebViewSource.html("<p>Windows</p>") };
+        }
+    };
+
+    const BridgeState = struct {
+        calls: u32 = 0,
+
+        fn special(context: *anyopaque, invocation: bridge.Invocation, output: []u8) anyerror![]const u8 {
+            _ = invocation;
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            return std.fmt.bufPrint(output, "{{\"allowed\":true,\"calls\":{d}}}", .{self.calls});
+        }
+    };
+
+    var bridge_state: BridgeState = .{};
+    const policies = [_]bridge.CommandPolicy{.{ .name = "native.special", .origins = &.{"zero://inline"} }};
+    const handlers = [_]bridge.Handler{.{ .name = "native.special", .context = &bridge_state, .invoke_fn = BridgeState.special }};
+
+    var harness: TestHarness() = undefined;
+    harness.init(.{});
+    harness.runtime.options.bridge = .{
+        .policy = .{ .enabled = true, .commands = &policies },
+        .registry = .{ .handlers = &handlers },
+    };
+    // Declare two capabilities: `main` may issue the `native.special` command,
+    // `settings` may not. A request routed through the `settings` window must
+    // be denied even though the same command is allowed in the main window.
+    const capabilities_storage = [_]security.capability.Capability{
+        .{
+            .identifier = "main-only",
+            .windows = &.{"main"},
+            .permissions = &.{
+                .{ .identifier = "native.special" },
+            },
+        },
+        .{
+            .identifier = "settings-only",
+            .windows = &.{"settings"},
+            .permissions = &.{
+                .{ .identifier = "native.echo" },
+            },
+        },
+    };
+    harness.runtime.options.security.capabilities = &capabilities_storage;
+    const webview_origins = [_][]const u8{"zero://inline"};
+    harness.runtime.options.security.navigation.allowed_origins = &webview_origins;
+
+    var app_state: TestApp = .{};
+    try harness.start(app_state.app());
+    const settings = try harness.runtime.createWindow(.{ .label = "settings", .title = "Settings" });
+    try std.testing.expectEqual(@as(platform.WindowId, 2), settings.id);
+
+    // `main` window: `native.special` is allowed by the `main-only` capability.
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = "{\"id\":\"main-allow\",\"command\":\"native.special\",\"payload\":{}}",
+        .origin = "zero://inline",
+        .window_id = 1,
+    } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"ok\":true") != null);
+    try std.testing.expectEqual(@as(u32, 1), bridge_state.calls);
+
+    // `settings` window: `native.special` has no matching capability, so the
+    // request is denied and the handler is not invoked.
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = "{\"id\":\"settings-deny\",\"command\":\"native.special\",\"payload\":{}}",
+        .origin = "zero://inline",
+        .window_id = 2,
+    } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"permission_denied\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "Bridge command is not permitted") != null);
+    try std.testing.expectEqual(@as(u32, 1), bridge_state.calls);
 }
 
 test {
