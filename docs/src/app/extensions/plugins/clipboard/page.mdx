@@ -1,0 +1,45 @@
+# Plugin: Clipboard
+
+In-memory text buffer with command dispatch. Records writes and returns the most recent value on read. Useful as a reference for the basic `clipboard` capability kind and for testing bridge commands that interact with clipboard state.
+
+## Commands
+
+| Command | Payload format | Description |
+|---------|----------------|-------------|
+| `clipboard.write_text` | `text` (whole payload) | Writes the payload to the buffer; empty payload falls back to `default_text` (`"hello from test"`) |
+| `clipboard.read_text` | none | Duplicates the current buffer into `state.last_read` for inspection |
+
+## State
+
+- `state.text` — most recent text written (or `null` initially)
+- `state.last_read` — copy returned by the last `clipboard.read_text` call
+- `state.allocator` — allocator used for the duplicated slices (freed in `stop`)
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('clipboard.write_text', 'hello world');
+const result = await invoke('clipboard.read_text', '');
+console.log(result);
+```
+
+## Notes
+
+- This plugin uses an in-memory buffer only. Real OS clipboard integration requires a native bridge to NSPasteboard / Win32 OpenClipboard / GTK clipboard.
+- The capability is registered as `Capability{ .kind = .clipboard }`; queries via `registry.hasCapability(.clipboard)` return `true` once the plugin is installed.
+- Pair with [Builtin Commands](/bridge/builtin-commands) when you need a `window.zero.clipboard.*` helper for the WebView side.
+- The `default_text` constant is exported for tests; production callers should always pass a non-empty payload.
+
+## Lifecycle
+
+```zig
+const module = try plugin_clipboard.create(allocator);
+try registry.startAll(runtime);
+// ... dispatch commands ...
+try registry.stopAll(runtime);
+```
+
+`stop` frees the duplicated `text` and `last_read` slices, then destroys the state struct. Leaks will be flagged by `std.testing.allocator` if you use the testing allocator in tests.
+
+See [Extensions](/extensions) for the module lifecycle.

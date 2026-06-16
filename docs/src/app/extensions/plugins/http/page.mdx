@@ -1,0 +1,45 @@
+# Plugin: HTTP
+
+Executes real HTTP/1.1 requests via a vendored client. Demonstrates the `network` capability and the `"METHOD URL"` payload convention.
+
+## Commands
+
+| Command | Payload format | Description |
+|---------|----------------|-------------|
+| `http.fetch` | `METHOD URL` (split on first ASCII space) | Records the parsed method/URL, issues a real request for `http://` URLs, and falls back to record-only on errors |
+| `http.clear` | none | Clears the recorded method/url/status/body |
+
+## State
+
+- `state.last_method` — most recent method (`GET` or `POST`); other methods record method/URL only
+- `state.last_url` — most recent URL
+- `state.last_status` — HTTP status code from the most recent real request
+- `state.last_body` — response body from the most recent real request
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('http.fetch', 'GET http://example.com/');
+const status = await invoke('http.fetch', 'POST https://httpbin.org/post|payload');
+```
+
+## Notes
+
+- HTTPS support is conditional on `httpz` being linked. Without it, `requestHttps` returns `error.HttpsNotSupported` and the plugin falls back to record-only mode.
+- Malformed payloads (no space) are silently rejected; the previously recorded method/URL are left untouched so callers can detect the bad input.
+- The `network` capability kind allows `registry.hasCapability(.network)` queries to succeed.
+- Only `GET` and `POST` methods trigger a real request. Other methods (e.g. `PUT`, `DELETE`) record the method/URL but skip the request and leave `last_status = 0`.
+
+## Lifecycle
+
+```zig
+const module = try plugin_http.create(allocator, io);
+try registry.startAll(runtime);
+// ... dispatch http.fetch, http.clear ...
+try registry.stopAll(runtime);
+```
+
+`stop` frees the recorded method/url/body slices and destroys the state struct. The `io` argument is forwarded to the vendored HTTP client for any real request that succeeds.
+
+See [Extensions](/extensions) for the module lifecycle.

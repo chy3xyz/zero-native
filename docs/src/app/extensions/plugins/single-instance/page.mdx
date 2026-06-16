@@ -1,0 +1,49 @@
+# Plugin: Single Instance
+
+Detects whether another instance of the same app is already running using a lock file in a configured directory. Uses `std.Io.Dir.createFile` with `.exclusive = true` to atomically claim the lock.
+
+## Commands
+
+| Command | Payload format | Description |
+|---------|----------------|-------------|
+| `single_instance.try_lock` | lock label (e.g. `"myapp"`) | Atomically creates a lock file. Sets `state.held = true` on success, `false` if another instance holds it. Empty payload uses `default_label` (`"default"`) |
+| `single_instance.release` | none | Releases the lock by removing the lock file and sets `state.held = false` |
+
+## State
+
+- `state.held` — `true` if this instance owns the lock
+- `state.lock_path` — full path to the lock file (`zero-native-<label>.lock` in the lock directory)
+
+## Lock directory
+
+The factory `create(allocator, io)` uses the system temp directory; `createWithDir(allocator, io, lock_dir)` accepts an explicit directory for tests.
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+const held = await invoke('single_instance.try_lock', 'myapp');
+if (!held) {
+  // another instance is already running
+}
+```
+
+## Notes
+
+- `release` is idempotent — calling it without holding the lock is a no-op.
+- `try_lock` releases any previously held lock before re-acquiring with a new label.
+- The capability is registered as `Capability{ .kind = .custom, .name = "single-instance" }`.
+- The lock file name pattern is `zero-native-<label>.lock`. Use a stable `label` (e.g. your app's bundle id) to keep the lock file consistent across upgrades.
+
+## Lifecycle
+
+```zig
+const module = try plugin_single_instance.create(allocator, io);
+try registry.startAll(runtime);
+// ... dispatch single_instance.try_lock, single_instance.release ...
+try registry.stopAll(runtime);
+```
+
+`stop` releases the lock if it is currently held, frees the owned `lock_path` slice, and destroys the state struct. Tests typically use `createWithDir` with `std.testing.tmpDir` to isolate the lock directory.
+
+See [Extensions](/extensions) for the module lifecycle.

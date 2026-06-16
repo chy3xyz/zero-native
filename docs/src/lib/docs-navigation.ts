@@ -26,6 +26,7 @@ export const navSections: NavSection[] = [
       { name: "Multiple WebViews", href: "/webviews" },
       { name: "Bridge", href: "/bridge" },
       { name: "Builtin Commands", href: "/bridge/builtin-commands" },
+      { name: "Type-Safe IPC", href: "/bridge/codegen" },
       { name: "Dialogs", href: "/dialogs" },
       { name: "System Tray", href: "/tray" },
       { name: "Security", href: "/security" },
@@ -42,6 +43,7 @@ export const navSections: NavSection[] = [
       { name: "app.zon Reference", href: "/app-zon" },
       { name: "Manifest Reference", href: "/manifest" },
       { name: "Capabilities", href: "/capabilities" },
+      { name: "App Sandbox", href: "/sandbox" },
     ],
   },
   {
@@ -57,6 +59,7 @@ export const navSections: NavSection[] = [
     title: "Advanced",
     items: [
       { name: "Extensions", href: "/extensions" },
+      { name: "Bundled Plugins", href: "/extensions/plugins" },
       { name: "Embedded App", href: "/embed" },
       { name: "Package Distribution", href: "/packages" },
     ],

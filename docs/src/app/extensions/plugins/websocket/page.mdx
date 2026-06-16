@@ -1,0 +1,47 @@
+# Plugin: WebSocket
+
+Minimal RFC 6455 WebSocket client with a pure Zig core layer and a plugin layer. The core layer provides URL parsing, client handshake encoding, response validation, and frame encode/decode. The plugin layer records parsed URL parts and outbound frames; real TCP I/O is deferred.
+
+## Commands
+
+| Command | Payload format | Description |
+|---------|----------------|-------------|
+| `websocket.connect` | `ws://host:port/path` or `wss://...` | Parses the URL, stores host/port/path/secure in `state.last_*`, and sets `state.connected = true` |
+| `websocket.send` | message text | Encodes a text frame and records it in `state.last_sent_frame` |
+| `websocket.close` | none | Sets `state.connected = false` |
+
+## State
+
+- `state.connected` — `true` after a successful `websocket.connect` with a valid URL
+- `state.last_host` — parsed host from the most recent `websocket.connect`
+- `state.last_port` — parsed port (default 80 for `ws://`, 443 for `wss://`)
+- `state.last_path` — parsed path (default `/` when none provided)
+- `state.last_secure` — `true` for `wss://`, `false` for `ws://`
+- `state.last_sent_frame` — most recently encoded outbound frame
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('websocket.connect', 'wss://api.example.com/graphql');
+await invoke('websocket.send', '{"type":"ping"}');
+await invoke('websocket.close', '');
+```
+
+## Core utilities
+
+The plugin exposes pure Zig helpers used by the runtime tests:
+
+- `WsUrl.parse(url_str)` — parse a `ws://` or `wss://` URL into host/port/path/secure
+- `encodeClientHandshake(allocator, host, path, key)` — build the HTTP/1.1 upgrade request
+- `decodeHandshakeResponse(response, key)` — verify the 101 response and `Sec-WebSocket-Accept` header
+- `encodeFrame(allocator, payload, opcode)` / `decodeFrame(data)` — RFC 6455 frame codec
+- `unmaskPayload(allocator, payload, mask_key)` — XOR with the mask key into an allocated buffer
+
+## Notes
+
+- Real TCP + handshake via `std.Io.NetStream` is deferred — `handleConnect` currently only records the parsed URL. Plan to wire the socket path before production use.
+- Frames are encoded with FIN=1 and MASK=1 (client-to-server). A fixed mask key (`0x12345678`) is used in tests for determinism; production should use a random per-frame key.
+- The capability is registered as `Capability{ .kind = .network, .name = "websocket" }`.
+
+See [Extensions](/extensions) for the module lifecycle.

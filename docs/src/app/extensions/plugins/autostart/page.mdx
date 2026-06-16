@@ -1,0 +1,40 @@
+# Plugin: Autostart
+
+Manages OS-level autostart registration. The plugin writes or removes the autostart file used by the platform's session manager.
+
+## Commands
+
+| Command | Payload format | Description |
+|---------|----------------|-------------|
+| `autostart.enable` | none | Writes the autostart file (creates parent directories as needed) |
+| `autostart.disable` | none | Removes the autostart file if it exists |
+| `autostart.status` | none | Sets `state.enabled` according to file existence |
+
+## State
+
+- `state.enabled` — `true` if the autostart file is present
+- `state.path` — full path to the autostart file (built from `app_name` in `create`)
+
+## Platform paths
+
+The `create(allocator, io, app_name, base_dir)` factory builds the canonical path:
+
+- **macOS**: `~/Library/LaunchAgents/com.<app_name>.plist` (writes a `RunAtLoad` plist)
+- **Linux / BSD**: `~/.config/autostart/<app_name>.desktop` (writes a `X-GNOME-Autostart-enabled` desktop entry)
+
+Pass an explicit `base_dir` to override the home directory lookup in tests.
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('autostart.enable', '');
+const enabled = await invoke('autostart.status', '');
+```
+
+## Notes
+
+- The autostart file currently contains placeholder `REPLACE_ME` strings for the `Label` / `ProgramArguments` / `Exec` values. Patch them with your app's bundle id and binary path before shipping.
+- The capability is registered as `Capability{ .kind = .custom, .name = "autostart" }`.
+
+See [Extensions](/extensions) for the module lifecycle.
