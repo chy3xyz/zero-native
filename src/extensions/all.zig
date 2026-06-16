@@ -15,4 +15,6 @@ test {
     _ = @import("plugin_single_instance.zig");
     _ = @import("plugin_autostart.zig");
     _ = @import("plugin_updater.zig");
+    _ = @import("plugin_global_shortcut.zig");
+    _ = @import("plugin_websocket.zig");
 }
