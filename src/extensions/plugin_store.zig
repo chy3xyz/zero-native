@@ -1,3 +1,14 @@
+//! In-memory key-value store plugin.
+//!
+//! Commands are routed by `cmd.name` only; any argument string lives in
+//! `cmd.payload`. Supported commands:
+//! - `store.set` — `cmd.payload` is `"key|value"`, split on the first `|`.
+//!   An empty `key` is silently rejected.
+//! - `store.get` — `cmd.payload` is the key. The most recent value (or
+//!   `null` for misses) is recorded in `state.last_get` for inspection.
+//! - `store.remove` — `cmd.payload` is the key. The key is removed from the
+//!   store and `state.last_get` is cleared.
+
 const std = @import("std");
 const extensions = @import("root.zig");
 
@@ -33,28 +44,24 @@ pub fn stop(context: *anyopaque, runtime: extensions.RuntimeContext) anyerror!vo
 
 /// Command dispatch ----------------------------------------------------------
 ///
-/// The extension `Command` carries no separate payload, so we encode the
-/// payload alongside the command identifier in `cmd.name` using a single
-/// `|` separator: `"store.set|<key>|<value>"` for set, and
-/// `"store.get|<key>"` / `"store.remove|<key>"` for the others. We split
-/// command-from-payload first, then split payload as needed.
+/// Commands are routed by `cmd.name`; the argument string (if any) lives in
+/// `cmd.payload`. `store.set` expects `"key|value"` (split on the first `|`);
+/// `store.get` and `store.remove` treat the whole payload as the key.
 
 pub fn command(context: *anyopaque, runtime: extensions.RuntimeContext, cmd: extensions.Command) anyerror!void {
     _ = runtime;
     const state: *StoreState = @ptrCast(@alignCast(context));
 
-    const command_name, const payload = splitFirst(cmd.name);
-
-    if (std.mem.eql(u8, command_name, "store.set")) {
-        try handleSet(state, payload);
+    if (std.mem.eql(u8, cmd.name, "store.set")) {
+        try handleSet(state, cmd.payload);
         return;
     }
-    if (std.mem.eql(u8, command_name, "store.get")) {
-        try handleGet(state, payload);
+    if (std.mem.eql(u8, cmd.name, "store.get")) {
+        try handleGet(state, cmd.payload);
         return;
     }
-    if (std.mem.eql(u8, command_name, "store.remove")) {
-        try handleRemove(state, payload);
+    if (std.mem.eql(u8, cmd.name, "store.remove")) {
+        try handleRemove(state, cmd.payload);
         return;
     }
 }
@@ -91,7 +98,9 @@ pub fn create(allocator: std.mem.Allocator) !extensions.Module {
 // Internal helpers ----------------------------------------------------------
 
 fn handleSet(state: *StoreState, payload: []const u8) anyerror!void {
-    const key, const value = splitFirst(payload);
+    const separator = std.mem.indexOfScalar(u8, payload, '|') orelse return;
+    const key = payload[0..separator];
+    const value = payload[separator + 1 ..];
     if (key.len == 0) return;
 
     const owned_key = try state.allocator.dupe(u8, key);
@@ -110,9 +119,7 @@ fn handleSet(state: *StoreState, payload: []const u8) anyerror!void {
 }
 
 fn handleGet(state: *StoreState, payload: []const u8) anyerror!void {
-    const key = payload;
-
-    if (state.values.get(key)) |value| {
+    if (state.values.get(payload)) |value| {
         const owned = try state.allocator.dupe(u8, value);
         freeLastGet(state);
         state.last_get = owned;
@@ -123,27 +130,14 @@ fn handleGet(state: *StoreState, payload: []const u8) anyerror!void {
 }
 
 fn handleRemove(state: *StoreState, payload: []const u8) anyerror!void {
-    try removeKey(state, payload);
+    if (state.values.fetchRemove(payload)) |entry| {
+        state.allocator.free(entry.key);
+        state.allocator.free(entry.value);
+    }
     if (state.last_get) |previous| {
         state.allocator.free(previous);
         state.last_get = null;
     }
-}
-
-fn removeKey(state: *StoreState, key: []const u8) !void {
-    if (state.values.fetchRemove(key)) |entry| {
-        state.allocator.free(entry.key);
-        state.allocator.free(entry.value);
-    }
-}
-
-/// Split on the first `|` byte. Returns the part before as the first tuple
-/// element and the remainder (which may itself contain `|`) as the second.
-fn splitFirst(input: []const u8) struct { []const u8, []const u8 } {
-    if (std.mem.indexOfScalar(u8, input, '|')) |index| {
-        return .{ input[0..index], input[index + 1 ..] };
-    }
-    return .{ input, "" };
 }
 
 fn freeLastGet(state: *StoreState) void {
@@ -172,8 +166,16 @@ test "plugin_store: set then get records the value" {
 
     const runtime = extensions.RuntimeContext{ .platform_name = "null" };
 
-    try command(module.context, runtime, .{ .name = "store.set|hello|world", .target = ModuleId });
-    try command(module.context, runtime, .{ .name = "store.get|hello", .target = ModuleId });
+    try command(module.context, runtime, .{
+        .name = "store.set",
+        .payload = "hello|world",
+        .target = ModuleId,
+    });
+    try command(module.context, runtime, .{
+        .name = "store.get",
+        .payload = "hello",
+        .target = ModuleId,
+    });
 
     const state: *StoreState = @ptrCast(@alignCast(module.context));
     try std.testing.expect(state.last_get != null);
@@ -187,7 +189,11 @@ test "plugin_store: get without prior set leaves last_get empty" {
     defer stopModule(&module, allocator);
 
     const runtime = extensions.RuntimeContext{ .platform_name = "null" };
-    try command(module.context, runtime, .{ .name = "store.get|missing", .target = ModuleId });
+    try command(module.context, runtime, .{
+        .name = "store.get",
+        .payload = "missing",
+        .target = ModuleId,
+    });
 
     const state: *StoreState = @ptrCast(@alignCast(module.context));
     try std.testing.expect(state.last_get == null);
@@ -200,9 +206,9 @@ test "plugin_store: set replaces the previous value and frees it" {
 
     const runtime = extensions.RuntimeContext{ .platform_name = "null" };
 
-    try command(module.context, runtime, .{ .name = "store.set|color|red", .target = ModuleId });
-    try command(module.context, runtime, .{ .name = "store.set|color|blue", .target = ModuleId });
-    try command(module.context, runtime, .{ .name = "store.get|color", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.set", .payload = "color|red", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.set", .payload = "color|blue", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.get", .payload = "color", .target = ModuleId });
 
     const state: *StoreState = @ptrCast(@alignCast(module.context));
     try std.testing.expectEqualStrings("blue", state.last_get.?);
@@ -216,14 +222,14 @@ test "plugin_store: remove clears the value" {
 
     const runtime = extensions.RuntimeContext{ .platform_name = "null" };
 
-    try command(module.context, runtime, .{ .name = "store.set|alpha|one", .target = ModuleId });
-    try command(module.context, runtime, .{ .name = "store.remove|alpha", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.set", .payload = "alpha|one", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.remove", .payload = "alpha", .target = ModuleId });
 
     const state: *StoreState = @ptrCast(@alignCast(module.context));
     try std.testing.expectEqual(@as(usize, 0), state.values.count());
 
     // Subsequent get should clear last_get.
-    try command(module.context, runtime, .{ .name = "store.get|alpha", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.get", .payload = "alpha", .target = ModuleId });
     try std.testing.expect(state.last_get == null);
 }
 
@@ -234,26 +240,26 @@ test "plugin_store: multiple keys coexist" {
 
     const runtime = extensions.RuntimeContext{ .platform_name = "null" };
 
-    try command(module.context, runtime, .{ .name = "store.set|a|1", .target = ModuleId });
-    try command(module.context, runtime, .{ .name = "store.set|b|2", .target = ModuleId });
-    try command(module.context, runtime, .{ .name = "store.set|c|3", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.set", .payload = "a|1", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.set", .payload = "b|2", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.set", .payload = "c|3", .target = ModuleId });
 
     const state: *StoreState = @ptrCast(@alignCast(module.context));
     try std.testing.expectEqual(@as(usize, 3), state.values.count());
 
-    try command(module.context, runtime, .{ .name = "store.get|a", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.get", .payload = "a", .target = ModuleId });
     try std.testing.expectEqualStrings("1", state.last_get.?);
-    try command(module.context, runtime, .{ .name = "store.get|b", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.get", .payload = "b", .target = ModuleId });
     try std.testing.expectEqualStrings("2", state.last_get.?);
-    try command(module.context, runtime, .{ .name = "store.get|c", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.get", .payload = "c", .target = ModuleId });
     try std.testing.expectEqualStrings("3", state.last_get.?);
 
     // Removing one key does not disturb the others.
-    try command(module.context, runtime, .{ .name = "store.remove|b", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.remove", .payload = "b", .target = ModuleId });
     try std.testing.expectEqual(@as(usize, 2), state.values.count());
-    try command(module.context, runtime, .{ .name = "store.get|a", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.get", .payload = "a", .target = ModuleId });
     try std.testing.expectEqualStrings("1", state.last_get.?);
-    try command(module.context, runtime, .{ .name = "store.get|c", .target = ModuleId });
+    try command(module.context, runtime, .{ .name = "store.get", .payload = "c", .target = ModuleId });
     try std.testing.expectEqualStrings("3", state.last_get.?);
 }
 

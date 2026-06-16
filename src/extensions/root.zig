@@ -30,6 +30,13 @@ pub const RuntimeContext = struct {
 pub const Command = struct {
     name: []const u8,
     target: ?ModuleId = null,
+    /// Free-form argument string for the command. Plugins interpret this
+    /// slice according to their own conventions; the registry does not
+    /// inspect it. A common shape is `arg1|arg2|...` (pipe-separated
+    /// arguments), but individual plugins may use a different separator
+    /// or a structured payload. Defaults to `""` so existing call sites
+    /// that only set `name` (and optional `target`) keep compiling.
+    payload: []const u8 = "",
 };
 
 pub const ModuleHooks = struct {

@@ -1,11 +1,11 @@
 //! HTTP plugin module — record-only stub for an HTTP fetch API.
 //!
-//! The extension `Command` struct only carries a routing name and an optional
-//! target module id, so the method and URL for `http.fetch` are encoded
-//! directly in `cmd.name` after the routing head, e.g.
-//! `"http.fetch:GET https://example.com"`. The plugin splits on the first
-//! `:` to recover the command and the payload, then splits the payload on
-//! the first ASCII space to recover the HTTP method and the URL.
+//! Commands are routed by `cmd.name` only; any argument string lives in
+//! `cmd.payload`. Supported commands:
+//! - `http.fetch` — `cmd.payload` is `"METHOD URL"` (split on the first
+//!   ASCII space). With no space, the call is silently rejected (the
+//!   previously recorded method/url are left untouched).
+//! - `http.clear` — clears the recorded method/url/status.
 //!
 //! The plugin is intentionally **record-only**: no actual network request is
 //! issued. `state.last_method` and `state.last_url` are populated with
@@ -69,8 +69,8 @@ pub fn stop(context: *anyopaque, _: extensions.RuntimeContext) anyerror!void {
 
 /// Command hook — routes `http.fetch` and `http.clear` to their handlers.
 ///
-/// Recognised forms (after splitting on the first `:`):
-/// - `"http.fetch"` with payload `"METHOD URL"` (split on first space).
+/// Recognised forms:
+/// - `"http.fetch"` with `cmd.payload = "METHOD URL"` (split on first space).
 /// - `"http.clear"` with no payload.
 ///
 /// Any other command is silently ignored, matching the convention used by
@@ -82,14 +82,12 @@ pub fn command(
 ) anyerror!void {
     const state: *HttpState = @ptrCast(@alignCast(context));
 
-    const parsed = parseCommand(cmd.name);
-
-    if (std.mem.eql(u8, parsed.head, cmd_fetch)) {
-        try handleFetch(state, parsed.payload);
+    if (std.mem.eql(u8, cmd.name, cmd_fetch)) {
+        try handleFetch(state, cmd.payload);
         return;
     }
 
-    if (std.mem.eql(u8, parsed.head, cmd_clear)) {
+    if (std.mem.eql(u8, cmd.name, cmd_clear)) {
         clearState(state);
         return;
     }
@@ -98,16 +96,6 @@ pub fn command(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/// Splits a command string into its routing head and payload. The payload is
-/// everything after the first `:`. The `:` is omitted so callers can pass
-/// bare command names like `"http.clear"`.
-fn parseCommand(raw: []const u8) struct { head: []const u8, payload: []const u8 } {
-    if (std.mem.indexOfScalar(u8, raw, ':')) |index| {
-        return .{ .head = raw[0..index], .payload = raw[index + 1 ..] };
-    }
-    return .{ .head = raw, .payload = "" };
-}
 
 /// Stores the parsed method and URL into `state`. Splits the payload on the
 /// first ASCII space; payloads with no separator are rejected silently
@@ -193,7 +181,8 @@ test "http fetch records method and url" {
     const module = try create(allocator);
     try module.hooks.start_fn.?(module.context, runtime);
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "http.fetch:GET https://example.com",
+        .name = "http.fetch",
+        .payload = "GET https://example.com",
     });
 
     const state: *HttpState = @ptrCast(@alignCast(module.context));
@@ -214,10 +203,12 @@ test "http fetch replaces previous method and url without leaking" {
     try module.hooks.start_fn.?(module.context, runtime);
 
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "http.fetch:GET https://example.com",
+        .name = "http.fetch",
+        .payload = "GET https://example.com",
     });
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "http.fetch:POST https://example.org/path",
+        .name = "http.fetch",
+        .payload = "POST https://example.org/path",
     });
 
     const state: *HttpState = @ptrCast(@alignCast(module.context));
@@ -235,7 +226,8 @@ test "http clear empties the recorded fields" {
     const module = try create(allocator);
     try module.hooks.start_fn.?(module.context, runtime);
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "http.fetch:GET https://example.com",
+        .name = "http.fetch",
+        .payload = "GET https://example.com",
     });
     try module.hooks.command_fn.?(module.context, runtime, .{
         .name = "http.clear",
@@ -256,14 +248,16 @@ test "http malformed fetch leaves prior state untouched" {
     const module = try create(allocator);
     try module.hooks.start_fn.?(module.context, runtime);
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "http.fetch:GET https://example.com",
+        .name = "http.fetch",
+        .payload = "GET https://example.com",
     });
 
     // No space → not a valid method/url pair; the plugin leaves the prior
     // values alone so callers can detect the malformed input by inspecting
     // the state.
     try module.hooks.command_fn.?(module.context, runtime, .{
-        .name = "http.fetch:malformed",
+        .name = "http.fetch",
+        .payload = "malformed",
     });
 
     const state: *HttpState = @ptrCast(@alignCast(module.context));
@@ -294,7 +288,8 @@ test "http registers in a ModuleRegistry and dispatches through the registry" {
 
     try registry.startAll(runtime);
     try registry.dispatchCommand(runtime, .{
-        .name = "http.fetch:GET https://example.com",
+        .name = "http.fetch",
+        .payload = "GET https://example.com",
     });
     try registry.dispatchCommand(runtime, .{ .name = "http.clear" });
 
