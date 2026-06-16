@@ -4,6 +4,7 @@ const cef = @import("cef.zig");
 const codesign = @import("codesign.zig");
 const diagnostics = @import("diagnostics");
 const manifest_tool = @import("manifest.zig");
+const security = @import("security");
 const web_engine_tool = @import("web_engine.zig");
 
 pub const PackageTarget = enum {
@@ -177,7 +178,21 @@ pub fn createMacosApp(allocator: std.mem.Allocator, io: std.Io, options: Package
         try cef.ensureLayout(io, options.cef_dir);
         try copyMacosCefRuntime(allocator, io, package_dir, options.cef_dir);
     }
-    const signing_result = try runSigning(allocator, io, package_dir, options);
+
+    // Generate sandbox entitlements plist if the app declares App Sandbox.
+    var sandbox_entitlements_path: ?[]const u8 = null;
+    if (options.metadata.security.sandbox.sandbox) {
+        const sandbox_ents = try security.sandbox.entitlements(options.metadata.security.sandbox, allocator);
+        defer security.sandbox.freeEntitlements(allocator, sandbox_ents);
+        const plist = try security.sandbox.toPlist(allocator, sandbox_ents);
+        defer allocator.free(plist);
+        const ent_path = try std.fmt.allocPrint(allocator, "{s}.entitlements", .{options.output_path});
+        sandbox_entitlements_path = ent_path;
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = ent_path, .data = plist });
+    }
+    defer if (sandbox_entitlements_path) |path| allocator.free(path);
+
+    const signing_result = try runSigning(allocator, io, package_dir, options, sandbox_entitlements_path);
     defer signing_result.deinit(allocator);
 
     return .{
@@ -753,7 +768,7 @@ fn copyTree(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, d
     }
 }
 
-fn runSigning(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, options: PackageOptions) !SigningResult {
+fn runSigning(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, options: PackageOptions, sandbox_entitlements_path: ?[]const u8) !SigningResult {
     const Plan = struct {
         text: []u8,
         ok: bool,
@@ -765,7 +780,11 @@ fn runSigning(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, options
                 .ok = false,
             },
             .adhoc => {
-                const result = codesign.signAdHoc(io, options.output_path) catch |err| {
+                const result = if (sandbox_entitlements_path) |ent_path|
+                    codesign.signAdHocWithEntitlements(io, options.output_path, ent_path)
+                else
+                    codesign.signAdHoc(io, options.output_path);
+                const result_actual = result catch |err| {
                     if (options.fail_on_signing_error) return err;
                     std.log.warn("package.signing_failed: command=\"codesign --sign - {s}\" error={s}", .{ options.output_path, @errorName(err) });
                     break :blk .{
@@ -773,7 +792,7 @@ fn runSigning(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, options
                         .ok = false,
                     };
                 };
-                if (result.ok) break :blk .{
+                if (result_actual.ok) break :blk .{
                     .text = try allocator.dupe(u8, "signing=adhoc\nad-hoc signed\n"),
                     .ok = true,
                 };
@@ -791,7 +810,8 @@ fn runSigning(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, options
                         .ok = false,
                     };
                 };
-                const result = codesign.signIdentity(io, options.output_path, identity, options.signing.entitlements) catch |err| {
+                const entitlements = sandbox_entitlements_path orelse options.signing.entitlements;
+                const result = codesign.signIdentity(io, options.output_path, identity, entitlements) catch |err| {
                     if (options.fail_on_signing_error) return err;
                     std.log.warn("package.signing_failed: command=\"codesign --sign {s} {s}\" identity={s} error={s}", .{ identity, options.output_path, identity, @errorName(err) });
                     break :blk .{

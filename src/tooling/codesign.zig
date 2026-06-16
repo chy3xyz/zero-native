@@ -74,6 +74,10 @@ pub fn signAdHoc(io: std.Io, app_path: []const u8) !SignResult {
     return runSign(io, .{ .app_path = app_path, .identity = "-", .deep = true });
 }
 
+pub fn signAdHocWithEntitlements(io: std.Io, app_path: []const u8, entitlements: []const u8) !SignResult {
+    return runSign(io, .{ .app_path = app_path, .identity = "-", .entitlements = entitlements, .deep = true });
+}
+
 pub fn signIdentity(io: std.Io, app_path: []const u8, identity: []const u8, entitlements: ?[]const u8) !SignResult {
     return runSign(io, .{
         .app_path = app_path,
