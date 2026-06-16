@@ -227,6 +227,25 @@ External links are denied by default. To open links in the system browser, opt i
 
 Do not allow broad external patterns for pages that can be influenced by remote content.
 
+## Content-Security-Policy
+
+The runtime can enforce a Content-Security-Policy on `.html` webview sources by injecting a `<meta http-equiv="Content-Security-Policy">` tag into the document before it reaches the platform backend. Set `csp` on the `WebViewSource` to opt in:
+
+```zig
+const source = platform.WebViewSource.htmlWithCsp(
+    "<html><head><body>hi</body></head></html>",
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
+);
+```
+
+CSP values are validated before injection: they must be non-empty, shorter than `csp.max_csp_bytes` (4096 bytes), and contain no control characters. Invalid values are skipped and the HTML loads as-is; the runtime emits a `security.csp_invalid` trace event with the CSP length and the configured maximum so you can diagnose the rejection.
+
+CSP injection is only supported for `.html` sources. For `.url` and `.assets` sources the runtime cannot rewrite the response, so any `csp` value is dropped and a `security.csp_skipped` trace event with a `kind` field is emitted. Configure the policy at the server or via HTTP response headers for those sources instead.
+
+On successful injection the runtime emits a `security.csp_injected` event with `csp_length`, `html_length`, and `injected_length` fields.
+
+CSP complements the [capabilities system](/capabilities): capabilities gate which bridge commands a window may issue, while CSP constrains what the rendered document may load or execute.
+
 ## CSP guidance
 
 For packaged assets, start with a strict Content Security Policy:
@@ -294,7 +313,7 @@ For dev servers, extend `connect-src` only to the local dev origin and WebSocket
     <tr>
       <td>CSP</td>
       <td>Not enforced by zero-native</td>
-      <td>Set in your HTML <code>&lt;meta&gt;</code> tag</td>
+      <td>Set <code>csp</code> on a <code>.html</code> <code>WebViewSource</code>; runtime injects a <code>&lt;meta&gt;</code> tag and logs <code>security.csp_injected</code>, <code>security.csp_invalid</code>, or <code>security.csp_skipped</code></td>
     </tr>
   </tbody>
 </table>

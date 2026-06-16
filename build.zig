@@ -138,6 +138,9 @@ pub fn build(b: *std.Build) void {
 
     const automation_protocol_mod = module(b, target, optimize, "src/automation/protocol.zig");
     const security_mod = module(b, target, optimize, "src/security/root.zig");
+    const csp_mod = module(b, target, optimize, "src/security/csp.zig");
+    security_mod.addImport("csp", csp_mod);
+    const csp_tests = testArtifact(b, csp_mod);
     const tooling_mod = module(b, target, optimize, "src/tooling/root.zig");
     tooling_mod.addImport("assets", assets_mod);
     tooling_mod.addImport("app_dirs", app_dirs_mod);
@@ -178,6 +181,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(extensions_tests).step);
     test_step.dependOn(&b.addRunArtifact(desktop_tests).step);
     test_step.dependOn(&b.addRunArtifact(tooling_tests).step);
+    test_step.dependOn(&b.addRunArtifact(csp_tests).step);
 
     addTestStep(b, "test-geometry", "Run geometry module tests", geometry_tests);
     addTestStep(b, "test-assets", "Run assets module tests", assets_tests);
@@ -190,6 +194,7 @@ pub fn build(b: *std.Build) void {
     addTestStep(b, "test-extensions", "Run extension module and plugin tests", extensions_tests);
     addTestStep(b, "test-desktop", "Run zero-native framework tests", desktop_tests);
     addTestStep(b, "test-tooling", "Run zero-native tooling tests", tooling_tests);
+    addTestStep(b, "test-csp", "Run CSP module tests", csp_tests);
 
     const run_hello = b.addSystemCommand(&.{ "zig", "build", "run", b.fmt("-Dplatform={s}", .{platform_arg}), b.fmt("-Dtrace={s}", .{@tagName(trace_option)}) });
     run_hello.setCwd(b.path("examples/hello"));
