@@ -175,4 +175,81 @@ try {
   </tbody>
 </table>
 
+## Streaming channels
+
+Channels stream typed values from Zig to JavaScript over the bridge using a lightweight wire protocol. Each channel is identified by a unique `StreamId` (a `u64`) and sends one or more **value frames** followed by an **end frame**.
+
+### Frame format
+
+Every frame is a tight JSON object with no extra whitespace:
+
+| Field     | Type     | Description                          |
+|-----------|----------|--------------------------------------|
+| `stream`  | `u64`    | Channel identifier                   |
+| `kind`    | `string` | `"value"` or `"end"`                |
+| `payload` | JSON     | Serialized value or empty string     |
+
+**Example value frame:**
+```json
+{"stream":1,"kind":"value","payload":42}
+```
+
+**Example end frame:**
+```json
+{"stream":1,"kind":"end","payload":""}
+```
+
+### Creating a typed channel
+
+Use `bridge.Channel(T)` to send typed values. The writer callback delivers serialized frames through your bridge response path. Supported payload types: `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `bool`, and `[]const u8`.
+
+```zig
+const bridge = @import("zero-native").bridge;
+
+// Test harness that collects frames into a list:
+const TestSink = struct {
+    frames: std.ArrayList([]u8),
+    allocator: std.mem.Allocator,
+
+    fn write(ctx: *anyopaque, frame_json: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        const copy = try self.allocator.dupe(u8, frame_json);
+        try self.frames.append(copy);
+    }
+};
+
+var sink = TestSink{ ... };
+var channel: bridge.Channel(i32) = .{
+    .id = 1,
+    .writer = TestSink.write,
+    .writer_ctx = &sink,
+    .allocator = std.testing.allocator,
+};
+
+// Send progress updates:
+try channel.send(25);  // {"stream":1,"kind":"value","payload":25}
+try channel.send(50);  // {"stream":1,"kind":"value","payload":50}
+try channel.send(100); // {"stream":1,"kind":"value","payload":100}
+
+// Signal completion (idempotent):
+try channel.close();   // {"stream":1,"kind":"end","payload":""}
+```
+
+### Runtime integration
+
+The runtime provides `createStreamChannel` as a convenience for wiring channels through the platform bridge. The function allocates a fresh `StreamId` and returns a `bridge.Channel(T)` whose writer automatically routes frames to `completeBridgeResponse` for the target window and webview. Until this helper is fully implemented, callers can construct a `bridge.Channel(T)` directly with a writer that calls their own bridge response path — the channel module tests demonstrate the full round-trip.
+
+### Wire protocol summary
+
+```
+Client                            Zig Runtime
+──────                            ───────────
+createStreamChannel(T, w, label)
+        │                              │
+        ├── value frame ──────────────►│  {"stream":1,"kind":"value","payload":42}
+        ├── value frame ──────────────►│  {"stream":1,"kind":"value","payload":84}
+        ├── end frame ────────────────►│  {"stream":1,"kind":"end","payload":""}
+        │                              │
+```
+
 See also: [Builtin Commands](/bridge/builtin-commands) for `zero-native.window.*`, `zero-native.webview.*`, and `zero-native.dialog.*`.

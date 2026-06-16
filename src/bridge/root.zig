@@ -350,6 +350,12 @@ pub fn isValidJsonValue(raw: []const u8) bool {
     return json.isValidValue(raw);
 }
 
+pub const channel = @import("channel.zig");
+pub const Channel = channel.Channel;
+pub const StreamId = channel.StreamId;
+pub const FrameKind = channel.FrameKind;
+pub const encodeFrame = channel.encodeFrame;
+
 fn validId(value: []const u8) bool {
     if (value.len == 0 or value.len > max_id_bytes) return false;
     for (value) |ch| {
