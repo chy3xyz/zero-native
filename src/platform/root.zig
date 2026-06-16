@@ -50,9 +50,19 @@ pub const WebViewSource = struct {
     kind: WebViewSourceKind,
     bytes: []const u8,
     asset_options: ?WebViewAssetSource = null,
+    /// Optional Content-Security-Policy value. When set on a `.html` source the
+    /// runtime injects a matching `<meta http-equiv="Content-Security-Policy">`
+    /// tag into the document before handing it to the platform backend. For
+    /// `.url` and `.assets` sources the value is logged via
+    /// `security.csp_skipped` because the runtime cannot rewrite the response.
+    csp: ?[]const u8 = null,
 
     pub fn html(bytes: []const u8) WebViewSource {
         return .{ .kind = .html, .bytes = bytes };
+    }
+
+    pub fn htmlWithCsp(bytes: []const u8, csp_value: []const u8) WebViewSource {
+        return .{ .kind = .html, .bytes = bytes, .csp = csp_value };
     }
 
     pub fn url(bytes: []const u8) WebViewSource {

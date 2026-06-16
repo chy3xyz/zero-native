@@ -1,5 +1,6 @@
 const std = @import("std");
 pub const capability = @import("capability.zig");
+pub const csp = @import("csp.zig");
 
 /// Re-export of the `capability` sub-module so consumers that depend on
 /// `security` (e.g. the tooling module) can access `Capability`, `Scope`,

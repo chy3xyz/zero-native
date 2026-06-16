@@ -7,6 +7,7 @@ const bridge = @import("../bridge/root.zig");
 const extensions = @import("../extensions/root.zig");
 const platform = @import("../platform/root.zig");
 const security = @import("../security/root.zig");
+const csp = @import("../security/csp.zig");
 const window_state = @import("../window_state/root.zig");
 
 const event_mod = @import("event.zig");
@@ -143,7 +144,13 @@ pub const Runtime = struct {
         const native_info = try self.options.platform.services.createWindow(window_options);
         native_created = true;
         self.applyNativeInfo(index, native_info);
-        try self.options.platform.services.loadWindowWebView(id, self.windows[index].source.?);
+        const stored_source = self.windows[index].source.?;
+        const allocator = self.cspAllocator();
+        const effective = try self.applyCspInjection(allocator, stored_source);
+        if (effective.owned) self.storeCspBuffer(index, @constCast(effective.bytes));
+        var payload = stored_source;
+        payload.bytes = effective.bytes;
+        try self.options.platform.services.loadWindowWebView(id, payload);
         self.invalidated = true;
         return self.windows[index].info;
     }
@@ -359,6 +366,7 @@ pub const Runtime = struct {
         self.loaded_source = source;
         const app_info = self.options.platform.app_info;
         const count = app_info.startupWindowCount();
+        const allocator = self.cspAllocator();
         var index: usize = 0;
         while (index < count) : (index += 1) {
             const window = app_info.resolvedStartupWindow(index);
@@ -370,7 +378,14 @@ pub const Runtime = struct {
             if (index > 0) {
                 _ = try self.options.platform.services.createWindow(window);
             }
-            try self.options.platform.services.loadWindowWebView(window.id, source);
+            const effective = try self.applyCspInjection(allocator, source);
+            if (effective.owned) {
+                const target_index = self.findWindowIndexById(window.id) orelse return error.WindowNotFound;
+                self.storeCspBuffer(target_index, @constCast(effective.bytes));
+            }
+            var payload = source;
+            payload.bytes = effective.bytes;
+            try self.options.platform.services.loadWindowWebView(window.id, payload);
             self.next_window_id = @max(self.next_window_id, window.id + 1);
         }
         try self.log("webview.load", "loaded webview source", &.{
@@ -385,7 +400,15 @@ pub const Runtime = struct {
     fn loadWebView(self: *Runtime, app: app_mod.App) anyerror!void {
         const source = try app.webViewSource();
         self.loaded_source = source;
-        try self.options.platform.services.loadWindowWebView(1, source);
+        const allocator = self.cspAllocator();
+        const effective = try self.applyCspInjection(allocator, source);
+        if (effective.owned) {
+            const target_index = self.findWindowIndexById(1) orelse return error.WindowNotFound;
+            self.storeCspBuffer(target_index, @constCast(effective.bytes));
+        }
+        var payload = source;
+        payload.bytes = effective.bytes;
+        try self.options.platform.services.loadWindowWebView(1, payload);
     }
 
     /// Reloads the webview source for all open windows. Return type is
@@ -394,13 +417,29 @@ pub const Runtime = struct {
     fn reloadWindows(self: *Runtime, app: app_mod.App) anyerror!void {
         const source = try app.webViewSource();
         self.loaded_source = source;
+        const allocator = self.cspAllocator();
         if (self.window_count == 0) {
-            try self.options.platform.services.loadWindowWebView(1, source);
+            const effective = try self.applyCspInjection(allocator, source);
+            if (effective.owned) {
+                // Synthesize a window record for the default window so the
+                // injected buffer has an owner. The `window_count == 0` branch
+                // is only reached in early-reload scenarios; the buffer is
+                // freed the next time the window is reserved or removed.
+                const target_index = try self.reserveWindow(1, "main", "", source);
+                self.storeCspBuffer(target_index, @constCast(effective.bytes));
+            }
+            var payload = source;
+            payload.bytes = effective.bytes;
+            try self.options.platform.services.loadWindowWebView(1, payload);
             return;
         }
-        for (self.windows[0..self.window_count]) |*window| {
+        for (self.windows[0..self.window_count], 0..) |*window, window_index| {
             const window_source = if (window.source) |stored| stored else source;
-            try self.options.platform.services.loadWindowWebView(window.info.id, window_source);
+            const effective = try self.applyCspInjection(allocator, window_source);
+            if (effective.owned) self.storeCspBuffer(window_index, @constCast(effective.bytes));
+            var payload = window_source;
+            payload.bytes = effective.bytes;
+            try self.options.platform.services.loadWindowWebView(window.info.id, payload);
         }
     }
 
@@ -623,6 +662,9 @@ pub const Runtime = struct {
 
     fn removeWindowAt(self: *Runtime, index: usize) void {
         if (index >= self.window_count) return;
+        // Free any CSP buffer owned by this window. The page allocator is
+        // always used for these buffers; see `applyCspInjection`.
+        if (self.windows[index].csp_buffer) |buffer| std.heap.page_allocator.free(buffer);
         var cursor = index;
         while (cursor + 1 < self.window_count) : (cursor += 1) {
             self.windows[cursor] = self.windows[cursor + 1];
@@ -1258,6 +1300,73 @@ pub const Runtime = struct {
         self.timestamp_ns = nowNanoseconds();
         return trace.Timestamp.fromNanoseconds(self.timestamp_ns);
     }
+
+    /// Returns the allocator used for transient CSP injection buffers.
+    /// Falls back to the page allocator because the runtime has no
+    /// configured allocator and CSP injection is bounded by
+    /// `csp.max_csp_bytes`.
+    fn cspAllocator(self: *Runtime) std.mem.Allocator {
+        _ = self;
+        return std.heap.page_allocator;
+    }
+
+    /// Replaces the CSP buffer tracked on `self.windows[index]` with
+    /// `buffer`. Frees any buffer the window was already holding. Used by
+    /// the load paths to hand a freshly-injected buffer to the window so
+    /// it survives for as long as the window does. The page allocator is
+    /// used because `applyCspInjection` always allocates with it.
+    fn storeCspBuffer(self: *Runtime, index: usize, buffer: []u8) void {
+        const allocator = self.cspAllocator();
+        if (self.windows[index].csp_buffer) |old| allocator.free(old);
+        self.windows[index].csp_buffer = buffer;
+    }
+
+    /// Returns the bytes that should be loaded for `source`, applying CSP
+    /// injection when appropriate. The returned `result.bytes` either points
+    /// back into `source.bytes` (when no injection happened) or is a freshly
+    /// allocated buffer the caller must free when `result.owned` is true.
+    ///
+    /// Logs:
+    ///   - `security.csp_injected` when the meta tag was injected.
+    ///   - `security.csp_invalid` when the CSP failed validation; injection
+    ///     is skipped and the original bytes are loaded.
+    ///   - `security.csp_skipped` when the source is `.url` or `.assets` and
+    ///     the runtime cannot rewrite the response.
+    fn applyCspInjection(
+        self: *Runtime,
+        allocator: std.mem.Allocator,
+        source: platform.WebViewSource,
+    ) !CspInjectionResult {
+        const csp_value = source.csp orelse return .{ .bytes = source.bytes, .owned = false };
+        if (source.kind != .html) {
+            self.log("security.csp_skipped", "CSP injection only applies to .html sources", &.{
+                trace.string("kind", @tagName(source.kind)),
+            }) catch {}; // trace write failures are best-effort
+            return .{ .bytes = source.bytes, .owned = false };
+        }
+        if (!csp.validateCsp(csp_value)) {
+            self.log("security.csp_invalid", "CSP value failed validation, skipping injection", &.{
+                trace.uint("csp_length", @intCast(csp_value.len)),
+                trace.uint("max_csp_bytes", csp.max_csp_bytes),
+            }) catch {}; // trace write failures are best-effort
+            return .{ .bytes = source.bytes, .owned = false };
+        }
+        const injected = try csp.injectCspMeta(allocator, source.bytes, csp_value);
+        self.log("security.csp_injected", "CSP meta tag injected into webview source", &.{
+            trace.uint("csp_length", @intCast(csp_value.len)),
+            trace.uint("html_length", @intCast(source.bytes.len)),
+            trace.uint("injected_length", @intCast(injected.len)),
+        }) catch {}; // trace write failures are best-effort
+        return .{ .bytes = injected, .owned = true };
+    }
+};
+
+/// Result of `Runtime.applyCspInjection`. `bytes` either points back into the
+/// source's owned slice (when no injection happened) or a freshly allocated
+/// buffer the caller must free when `owned` is true.
+const CspInjectionResult = struct {
+    bytes: []const u8,
+    owned: bool,
 };
 
 fn nowNanoseconds() i128 {
@@ -1288,6 +1397,11 @@ const RuntimeWindow = struct {
     label_storage: [platform.max_window_label_bytes]u8 = undefined,
     title_storage: [platform.max_window_title_bytes]u8 = undefined,
     source_storage: [platform.max_window_source_bytes]u8 = undefined,
+    /// Buffer holding the CSP-injected HTML bytes for this window's source,
+    /// when injection happened. `null` means the source bytes are owned
+    /// elsewhere (app-provided, asset URL, or no CSP). Allocated via the
+    /// page allocator and freed when the window is removed.
+    csp_buffer: ?[]u8 = null,
 };
 
 const RuntimeWebView = struct {
@@ -2502,6 +2616,118 @@ test "runtime enforces capabilities per window" {
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"permission_denied\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "Bridge command is not permitted") != null);
     try std.testing.expectEqual(@as(u32, 1), bridge_state.calls);
+}
+
+test "runtime injects CSP meta tag into html webview source" {
+    var harness: TestHarness() = undefined;
+    harness.init(.{});
+    const html = "<html><head></head><body>hi</body></html>";
+    const csp_value = "default-src 'self'";
+    const TestApp = struct {
+        bytes: []const u8,
+        csp_value: []const u8,
+
+        fn app(self: *@This()) App {
+            return .{
+                .context = self,
+                .name = "csp-app",
+                .source = .{ .kind = .html, .bytes = self.bytes, .csp = self.csp_value },
+            };
+        }
+    };
+
+    var app_state: TestApp = .{ .bytes = html, .csp_value = csp_value };
+    try harness.start(app_state.app());
+
+    const loaded = harness.null_platform.loaded_source.?;
+    try std.testing.expect(std.mem.indexOf(u8, loaded.bytes, "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'\">") != null);
+    try std.testing.expect(std.mem.indexOf(u8, loaded.bytes, "<head>") != null);
+}
+
+test "runtime skips CSP injection for non-html sources and logs it" {
+    var harness: TestHarness() = undefined;
+    harness.init(.{});
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{
+                .context = self,
+                .name = "csp-skip",
+                .source = .{ .kind = .url, .bytes = "https://example.com", .csp = "default-src 'self'" },
+            };
+        }
+    };
+
+    var app_state: TestApp = .{};
+    try harness.start(app_state.app());
+
+    const loaded = harness.null_platform.loaded_source.?;
+    try std.testing.expectEqualStrings("https://example.com", loaded.bytes);
+    var saw_skipped = false;
+    for (harness.trace_sink.written()) |record| {
+        if (std.mem.eql(u8, record.name, "security.csp_skipped")) {
+            saw_skipped = true;
+            break;
+        }
+    }
+    try std.testing.expect(saw_skipped);
+}
+
+test "runtime skips CSP injection when CSP is invalid and logs it" {
+    var harness: TestHarness() = undefined;
+    harness.init(.{});
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{
+                .context = self,
+                .name = "csp-invalid",
+                .source = .{ .kind = .html, .bytes = "<html><body>hi</body></html>", .csp = "" },
+            };
+        }
+    };
+
+    var app_state: TestApp = .{};
+    try harness.start(app_state.app());
+
+    const loaded = harness.null_platform.loaded_source.?;
+    try std.testing.expectEqualStrings("<html><body>hi</body></html>", loaded.bytes);
+    var saw_invalid = false;
+    for (harness.trace_sink.written()) |record| {
+        if (std.mem.eql(u8, record.name, "security.csp_invalid")) {
+            saw_invalid = true;
+            break;
+        }
+    }
+    try std.testing.expect(saw_invalid);
+}
+
+test "runtime logs security.csp_injected when injection succeeds" {
+    var harness: TestHarness() = undefined;
+    harness.init(.{});
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{
+                .context = self,
+                .name = "csp-injected",
+                .source = .{
+                    .kind = .html,
+                    .bytes = "<html><head></head><body>hi</body></html>",
+                    .csp = "default-src 'self'",
+                },
+            };
+        }
+    };
+
+    var app_state: TestApp = .{};
+    try harness.start(app_state.app());
+
+    var saw_injected = false;
+    for (harness.trace_sink.written()) |record| {
+        if (std.mem.eql(u8, record.name, "security.csp_injected")) {
+            saw_injected = true;
+            break;
+        }
+    }
+    try std.testing.expect(saw_injected);
 }
 
 test {
