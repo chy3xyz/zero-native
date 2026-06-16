@@ -1,0 +1,228 @@
+# Manifest Reference
+
+The zero-native manifest declares app identity, permissions, bridge policies, security rules, window layout, and frontend configuration. In zero-native projects it lives at `app.zon` and uses ZON syntax; the schema below is the same regardless of how the manifest is serialized.
+
+## Example
+
+```toml
+id = "com.example.myapp"
+name = "myapp"
+display_name = "My App"
+version = "1.2.3"
+icons = ["assets/icon.icns", "assets/icon.ico"]
+platforms = ["macos", "linux"]
+permissions = ["window", "filesystem"]
+capabilities = ["webview", "js_bridge", "native_module"]
+
+[[bridge.commands]]
+name = "native.ping"
+permissions = ["filesystem"]
+origins = ["zero://app"]
+
+[[bridge.commands]]
+name = "zero-native.window.create"
+permissions = ["window"]
+origins = ["zero://app"]
+
+[security.navigation]
+allowed_origins = ["zero://app", "http://127.0.0.1:5173"]
+
+[security.navigation.external_links]
+action = "open_system_browser"
+allowed_urls = ["https://example.com/*"]
+
+web_engine = "system"
+
+[cef]
+dir = "third_party/cef/macos"
+auto_install = false
+
+[frontend]
+dist = "frontend/dist"
+entry = "index.html"
+spa_fallback = true
+
+[frontend.dev]
+url = "http://127.0.0.1:5173/"
+command = ["npm", "--prefix", "frontend", "run", "dev"]
+ready_path = "/"
+timeout_ms = 30000
+
+[[windows]]
+label = "main"
+title = "My App"
+width = 720
+height = 480
+x = 100
+y = 100
+restore_state = true
+```
+
+## Field reference
+
+<table>
+  <thead>
+    <tr>
+      <th>Field</th>
+      <th>Type</th>
+      <th>Default</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>id</code></td>
+      <td>string</td>
+      <td>required</td>
+      <td>Reverse-DNS bundle identifier, e.g. <code>com.example.myapp</code></td>
+    </tr>
+    <tr>
+      <td><code>name</code></td>
+      <td>string</td>
+      <td>required</td>
+      <td>Short machine name used for logs and artifacts</td>
+    </tr>
+    <tr>
+      <td><code>display_name</code></td>
+      <td>string</td>
+      <td><code>name</code></td>
+      <td>Human-readable app name (menu bar, window title fallback)</td>
+    </tr>
+    <tr>
+      <td><code>version</code></td>
+      <td>string</td>
+      <td>required</td>
+      <td>Semver version string, e.g. <code>1.2.3</code></td>
+    </tr>
+    <tr>
+      <td><code>icons</code></td>
+      <td>string[]</td>
+      <td><code>[]</code></td>
+      <td>Relative paths to icon files for packaging</td>
+    </tr>
+    <tr>
+      <td><code>platforms</code></td>
+      <td>string[]</td>
+      <td><code>[]</code></td>
+      <td>Target platforms: <code>macos</code>, <code>linux</code>, <code>windows</code>, <code>ios</code>, <code>android</code>, <code>web</code></td>
+    </tr>
+    <tr>
+      <td><code>permissions</code></td>
+      <td>string[]</td>
+      <td><code>[]</code></td>
+      <td>Runtime permissions such as <code>network</code>, <code>filesystem</code>, <code>camera</code>, <code>window</code> (see <a href="/security">Security</a>)</td>
+    </tr>
+    <tr>
+      <td><code>capabilities</code></td>
+      <td>string[]</td>
+      <td><code>[]</code></td>
+      <td>Feature declarations such as <code>webview</code>, <code>js_bridge</code>, <code>native_module</code> (see <a href="/security">Security</a>)</td>
+    </tr>
+    <tr>
+      <td><code>bridge.commands</code></td>
+      <td>object[]</td>
+      <td><code>[]</code></td>
+      <td>Bridge command policies. Each entry has <code>name</code>, optional <code>permissions</code>, and optional <code>origins</code> (see <a href="/bridge">Bridge</a>)</td>
+    </tr>
+    <tr>
+      <td><code>web_engine</code></td>
+      <td>string</td>
+      <td><code>"system"</code></td>
+      <td><code>system</code> or <code>chromium</code>. Chromium is currently supported for macOS builds (see <a href="/web-engines">Web Engines</a>)</td>
+    </tr>
+    <tr>
+      <td><code>cef.dir</code></td>
+      <td>string</td>
+      <td>platform default</td>
+      <td>Path to the CEF framework directory for Chromium builds</td>
+    </tr>
+    <tr>
+      <td><code>cef.auto_install</code></td>
+      <td>boolean</td>
+      <td><code>false</code></td>
+      <td>Whether the tooling should download CEF automatically</td>
+    </tr>
+    <tr>
+      <td><code>frontend.dist</code></td>
+      <td>string</td>
+      <td><code>"dist"</code></td>
+      <td>Directory containing built frontend assets</td>
+    </tr>
+    <tr>
+      <td><code>frontend.entry</code></td>
+      <td>string</td>
+      <td><code>"index.html"</code></td>
+      <td>Entry file inside <code>frontend.dist</code></td>
+    </tr>
+    <tr>
+      <td><code>frontend.spa_fallback</code></td>
+      <td>boolean</td>
+      <td><code>true</code></td>
+      <td>Whether asset requests fall back to <code>frontend.entry</code> for SPAs</td>
+    </tr>
+    <tr>
+      <td><code>frontend.dev.url</code></td>
+      <td>string</td>
+      <td>required when <code>frontend.dev</code> is set</td>
+      <td>Dev server URL to load in the WebView during development</td>
+    </tr>
+    <tr>
+      <td><code>frontend.dev.command</code></td>
+      <td>string[]</td>
+      <td><code>[]</code></td>
+      <td>Command to spawn as a child process to start the dev server</td>
+    </tr>
+    <tr>
+      <td><code>frontend.dev.ready_path</code></td>
+      <td>string</td>
+      <td><code>"/"</code></td>
+      <td>HTTP path polled until the dev server is ready</td>
+    </tr>
+    <tr>
+      <td><code>frontend.dev.timeout_ms</code></td>
+      <td>number</td>
+      <td><code>30000</code></td>
+      <td>Milliseconds to wait for the dev server before failing</td>
+    </tr>
+    <tr>
+      <td><code>security.navigation.allowed_origins</code></td>
+      <td>string[]</td>
+      <td><code>[]</code></td>
+      <td>Origins the WebView is allowed to navigate to</td>
+    </tr>
+    <tr>
+      <td><code>security.navigation.external_links.action</code></td>
+      <td>string</td>
+      <td><code>"deny"</code></td>
+      <td>How external links are handled: <code>deny</code> or <code>open_system_browser</code></td>
+    </tr>
+    <tr>
+      <td><code>security.navigation.external_links.allowed_urls</code></td>
+      <td>string[]</td>
+      <td><code>[]</code></td>
+      <td>URL patterns allowed when the external link action is <code>open_system_browser</code></td>
+    </tr>
+    <tr>
+      <td><code>windows</code></td>
+      <td>object[]</td>
+      <td><code>[]</code></td>
+      <td>Startup window definitions. Each entry has <code>label</code>, optional <code>title</code>, <code>width</code>, <code>height</code>, optional <code>x</code>/<code>y</code>, and <code>restore_state</code> (see <a href="/windows">Windows</a>)</td>
+    </tr>
+  </tbody>
+</table>
+
+## Lifetime
+
+The manifest parser allocates strings, arrays, and nested objects from the supplied allocator and returns them in a `Metadata` value. The caller owns the result and must free it with `Metadata.deinit(allocator)` to avoid leaks.
+
+```zig
+const metadata = try tooling.manifest.readMetadata(allocator, io, "app.zon");
+defer metadata.deinit(allocator);
+```
+
+## Next steps
+
+- [Quick Start](/quick-start) -- Create, run, and package your first app
+- [app.zon Reference](/app-zon) -- Same schema in ZON syntax
+- [Security](/security) -- Permissions, policies, and navigation rules
+- [Bridge](/bridge) -- Call native Zig code from JavaScript

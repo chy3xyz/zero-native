@@ -40,6 +40,7 @@ export const navSections: NavSection[] = [
       { name: "Code Signing", href: "/packaging/signing" },
       { name: "Updates", href: "/updates" },
       { name: "app.zon Reference", href: "/app-zon" },
+      { name: "Manifest Reference", href: "/manifest" },
     ],
   },
   {

@@ -64,9 +64,8 @@ pub const Metadata = struct {
         }
         for (self.security.navigation.allowed_origins) |value| allocator.free(value);
         if (self.security.navigation.allowed_origins.len > 0) allocator.free(self.security.navigation.allowed_origins);
-        if (!std.mem.eql(u8, self.security.navigation.external_links.action, "deny") or self.security.navigation.external_links.allowed_urls.len > 0) {
-            allocator.free(self.security.navigation.external_links.action);
-        }
+        // `action` is always heap-owned after `parseText`, so it is freed unconditionally.
+        allocator.free(self.security.navigation.external_links.action);
         for (self.security.navigation.external_links.allowed_urls) |value| allocator.free(value);
         if (self.security.navigation.external_links.allowed_urls.len > 0) allocator.free(self.security.navigation.external_links.allowed_urls);
         for (self.windows) |window| {
@@ -181,7 +180,7 @@ pub fn parseText(allocator: std.mem.Allocator, source: []const u8) !Metadata {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    const source_z = try scratch.dupeZ(u8, source);
+    const source_z = try scratch.dupeSentinel(u8, source, 0);
     const raw = try std.zon.parse.fromSliceAlloc(RawManifest, scratch, source_z, null, .{});
     return .{
         .id = try allocator.dupe(u8, raw.id),
@@ -242,16 +241,12 @@ fn convertRawFrontend(allocator: std.mem.Allocator, frontend: ?RawFrontend) !?Fr
 }
 
 fn convertRawSecurity(allocator: std.mem.Allocator, security: RawSecurity) !SecurityMetadata {
-    const external_action = if (security.navigation.external_links.allowed_urls.len == 0 and
-        std.mem.eql(u8, security.navigation.external_links.action, "deny"))
-        "deny"
-    else
-        try allocator.dupe(u8, security.navigation.external_links.action);
+    // `action` is always heap-owned so that `Metadata.deinit` can unconditionally free it.
     return .{
         .navigation = .{
             .allowed_origins = try duplicateStringList(allocator, security.navigation.allowed_origins),
             .external_links = .{
-                .action = external_action,
+                .action = try allocator.dupe(u8, security.navigation.external_links.action),
                 .allowed_urls = try duplicateStringList(allocator, security.navigation.external_links.allowed_urls),
             },
         },
@@ -557,4 +552,117 @@ test "manifest metadata parser reads frontend config" {
     try std.testing.expectEqualStrings("http://127.0.0.1:5173/", metadata.frontend.?.dev.?.url);
     try std.testing.expectEqualStrings("npm", metadata.frontend.?.dev.?.command[0]);
     try std.testing.expectEqual(@as(u32, 12000), metadata.frontend.?.dev.?.timeout_ms);
+}
+
+test "Metadata.deinit frees all owned fields" {
+    const allocator = std.testing.allocator;
+
+    const id = try allocator.dupe(u8, "com.example.app");
+    const name = try allocator.dupe(u8, "example");
+    const display_name = try allocator.dupe(u8, "Example App");
+    const version = try allocator.dupe(u8, "1.2.3");
+    const web_engine = try allocator.dupe(u8, "chromium");
+    const cef_dir = try allocator.dupe(u8, "third_party/cef/macos");
+
+    const icons = try allocator.alloc([]const u8, 1);
+    errdefer allocator.free(icons);
+    icons[0] = try allocator.dupe(u8, "assets/icon.png");
+
+    const platforms = try allocator.alloc([]const u8, 1);
+    errdefer allocator.free(platforms);
+    platforms[0] = try allocator.dupe(u8, "macos");
+
+    const permissions = try allocator.alloc([]const u8, 1);
+    errdefer allocator.free(permissions);
+    permissions[0] = try allocator.dupe(u8, "window");
+
+    const capabilities = try allocator.alloc([]const u8, 1);
+    errdefer allocator.free(capabilities);
+    capabilities[0] = try allocator.dupe(u8, "webview");
+
+    const bridge_commands = try allocator.alloc(BridgeCommandMetadata, 1);
+    errdefer allocator.free(bridge_commands);
+    const command_permissions = try allocator.alloc([]const u8, 1);
+    command_permissions[0] = try allocator.dupe(u8, "filesystem");
+    const command_origins = try allocator.alloc([]const u8, 1);
+    command_origins[0] = try allocator.dupe(u8, "zero://app");
+    bridge_commands[0] = .{
+        .name = try allocator.dupe(u8, "native.ping"),
+        .permissions = command_permissions,
+        .origins = command_origins,
+    };
+
+    const dev_command = try allocator.alloc([]const u8, 2);
+    dev_command[0] = try allocator.dupe(u8, "npm");
+    dev_command[1] = try allocator.dupe(u8, "run");
+    const frontend: ?FrontendMetadata = .{
+        .dist = try allocator.dupe(u8, "frontend/dist"),
+        .entry = try allocator.dupe(u8, "index.html"),
+        .spa_fallback = true,
+        .dev = .{
+            .url = try allocator.dupe(u8, "http://127.0.0.1:5173/"),
+            .command = dev_command,
+            .ready_path = try allocator.dupe(u8, "/health"),
+            .timeout_ms = 30_000,
+        },
+    };
+
+    const allowed_origins = try allocator.alloc([]const u8, 2);
+    allowed_origins[0] = try allocator.dupe(u8, "zero://app");
+    allowed_origins[1] = try allocator.dupe(u8, "https://example.com");
+    const allowed_urls = try allocator.alloc([]const u8, 1);
+    allowed_urls[0] = try allocator.dupe(u8, "https://example.com/*");
+    const security = SecurityMetadata{
+        .navigation = .{
+            .allowed_origins = allowed_origins,
+            .external_links = .{
+                .action = try allocator.dupe(u8, "open_system_browser"),
+                .allowed_urls = allowed_urls,
+            },
+        },
+    };
+
+    const windows = try allocator.alloc(WindowMetadata, 1);
+    errdefer allocator.free(windows);
+    windows[0] = .{
+        .label = try allocator.dupe(u8, "main"),
+        .title = try allocator.dupe(u8, "Example"),
+        .width = 720,
+        .height = 480,
+        .x = 0,
+        .y = 0,
+        .restore_state = true,
+    };
+
+    const metadata = Metadata{
+        .id = id,
+        .name = name,
+        .display_name = display_name,
+        .version = version,
+        .icons = icons,
+        .platforms = platforms,
+        .permissions = permissions,
+        .capabilities = capabilities,
+        .bridge_commands = bridge_commands,
+        .web_engine = web_engine,
+        .cef = .{ .dir = cef_dir, .auto_install = true },
+        .frontend = frontend,
+        .security = security,
+        .windows = windows,
+    };
+
+    metadata.deinit(allocator);
+}
+
+test "Metadata.deinit frees default deny action" {
+    const metadata = try parseText(std.testing.allocator,
+        \\.{
+        \\  .id = "com.example.app",
+        \\  .name = "example",
+        \\  .version = "1.2.3",
+        \\}
+    );
+    defer metadata.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("deny", metadata.security.navigation.external_links.action);
 }
