@@ -83,6 +83,10 @@ pub const Metadata = struct {
             allocator.free(self.security.navigation.external_links.action);
         for (self.security.navigation.external_links.allowed_urls) |value| allocator.free(value);
         if (self.security.navigation.external_links.allowed_urls.len > 0) allocator.free(self.security.navigation.external_links.allowed_urls);
+        for (self.security.sandbox.file_read) |value| allocator.free(value);
+        if (self.security.sandbox.file_read.len > 0) allocator.free(self.security.sandbox.file_read);
+        for (self.security.sandbox.file_write) |value| allocator.free(value);
+        if (self.security.sandbox.file_write.len > 0) allocator.free(self.security.sandbox.file_write);
         for (self.windows) |window| {
             allocator.free(window.label);
             if (window.title) |title| allocator.free(title);
@@ -133,6 +137,7 @@ pub const NavigationMetadata = struct {
 
 pub const SecurityMetadata = struct {
     navigation: NavigationMetadata = .{},
+    sandbox: security_pkg.sandbox.MacOSSandbox = .{},
 };
 
 const RawManifest = raw_manifest.RawManifest;
@@ -256,6 +261,21 @@ pub fn parseText(allocator: std.mem.Allocator, source: []const u8) !Metadata {
                 .action = action,
                 .allowed_urls = try duplicateStringList(allocator, raw.security.navigation.external_links.allowed_urls),
             },
+        },
+        .sandbox = .{
+            .sandbox = raw.security.sandbox.sandbox,
+            .network_client = raw.security.sandbox.network_client,
+            .network_server = raw.security.sandbox.network_server,
+            .files_user_selected_read = raw.security.sandbox.files_user_selected_read,
+            .files_user_selected_write = raw.security.sandbox.files_user_selected_write,
+            .file_read = try duplicateStringList(allocator, raw.security.sandbox.file_read),
+            .file_write = try duplicateStringList(allocator, raw.security.sandbox.file_write),
+            .camera = raw.security.sandbox.camera,
+            .microphone = raw.security.sandbox.microphone,
+            .usb = raw.security.sandbox.usb,
+            .printing = raw.security.sandbox.printing,
+            .allow_jit = raw.security.sandbox.allow_jit,
+            .custom = raw.security.sandbox.custom,
         },
     };
     metadata.windows = try convertRawWindows(allocator, raw.windows);
@@ -416,6 +436,21 @@ fn convertRawSecurity(allocator: std.mem.Allocator, raw: RawSecurity) !SecurityM
                 .action = try allocator.dupe(u8, raw.navigation.external_links.action),
                 .allowed_urls = try duplicateStringList(allocator, raw.navigation.external_links.allowed_urls),
             },
+        },
+        .sandbox = .{
+            .sandbox = raw.sandbox.sandbox,
+            .network_client = raw.sandbox.network_client,
+            .network_server = raw.sandbox.network_server,
+            .files_user_selected_read = raw.sandbox.files_user_selected_read,
+            .files_user_selected_write = raw.sandbox.files_user_selected_write,
+            .file_read = try duplicateStringList(allocator, raw.sandbox.file_read),
+            .file_write = try duplicateStringList(allocator, raw.sandbox.file_write),
+            .camera = raw.sandbox.camera,
+            .microphone = raw.sandbox.microphone,
+            .usb = raw.sandbox.usb,
+            .printing = raw.sandbox.printing,
+            .allow_jit = raw.sandbox.allow_jit,
+            .custom = raw.sandbox.custom,
         },
     };
 }

@@ -143,7 +143,10 @@ pub fn build(b: *std.Build) void {
     const security_mod = module(b, target, optimize, "src/security/root.zig");
     const csp_mod = module(b, target, optimize, "src/security/csp.zig");
     security_mod.addImport("csp", csp_mod);
+    const sandbox_mod = module(b, target, optimize, "src/security/sandbox.zig");
+    security_mod.addImport("sandbox", sandbox_mod);
     const csp_tests = testArtifact(b, csp_mod);
+    const sandbox_tests = testArtifact(b, sandbox_mod);
     const tooling_mod = module(b, target, optimize, "src/tooling/root.zig");
     tooling_mod.addImport("assets", assets_mod);
     tooling_mod.addImport("app_dirs", app_dirs_mod);
@@ -153,6 +156,7 @@ pub fn build(b: *std.Build) void {
     tooling_mod.addImport("platform_info", platform_info_mod);
     tooling_mod.addImport("trace", trace_mod);
     tooling_mod.addImport("security", security_mod);
+    tooling_mod.addImport("sandbox", sandbox_mod);
     const tooling_tests = testArtifact(b, tooling_mod);
 
     const cli_mod = module(b, target, optimize, "tools/zero-native/main.zig");
@@ -186,6 +190,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(desktop_tests).step);
     test_step.dependOn(&b.addRunArtifact(tooling_tests).step);
     test_step.dependOn(&b.addRunArtifact(csp_tests).step);
+    test_step.dependOn(&b.addRunArtifact(sandbox_tests).step);
 
     addTestStep(b, "test-geometry", "Run geometry module tests", geometry_tests);
     addTestStep(b, "test-assets", "Run assets module tests", assets_tests);
@@ -200,6 +205,7 @@ pub fn build(b: *std.Build) void {
     addTestStep(b, "test-desktop", "Run zero-native framework tests", desktop_tests);
     addTestStep(b, "test-tooling", "Run zero-native tooling tests", tooling_tests);
     addTestStep(b, "test-csp", "Run CSP module tests", csp_tests);
+    addTestStep(b, "test-sandbox", "Run sandbox module tests", sandbox_tests);
 
     const run_hello = b.addSystemCommand(&.{ "zig", "build", "run", b.fmt("-Dplatform={s}", .{platform_arg}), b.fmt("-Dtrace={s}", .{@tagName(trace_option)}) });
     run_hello.setCwd(b.path("examples/hello"));

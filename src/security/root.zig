@@ -1,6 +1,7 @@
 const std = @import("std");
 pub const capability = @import("capability.zig");
 pub const csp = @import("csp.zig");
+pub const sandbox = @import("sandbox.zig");
 
 /// Re-export of the `capability` sub-module so consumers that depend on
 /// `security` (e.g. the tooling module) can access `Capability`, `Scope`,
@@ -14,6 +15,7 @@ pub const ScopeVars = capability.ScopeVars;
 pub const resolveScope = capability.resolveScope;
 pub const matchGlob = capability.matchGlob;
 pub const allowsPath = capability.allowsPath;
+pub const MacOSSandbox = sandbox.MacOSSandbox;
 
 /// Permission grant that allows creating and managing application windows.
 pub const permission_window = "window";
@@ -71,6 +73,10 @@ pub const Policy = struct {
     /// makes any pattern that references a variable expand to a string
     /// containing only its literal prefix.
     scope_vars: capability.ScopeVars = .{},
+    /// macOS App Sandbox configuration. When `.sandbox` is true the
+    /// packaging tool generates a dynamic entitlements plist and passes
+    /// it to codesign.
+    sandbox_config: sandbox.MacOSSandbox = .{},
 };
 
 /// Returns `true` if `grants` contains `permission`.

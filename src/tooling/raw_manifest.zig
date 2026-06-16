@@ -56,6 +56,23 @@ pub const RawFrontendDev = struct {
 
 pub const RawSecurity = struct {
     navigation: RawNavigation = .{},
+    sandbox: RawSandbox = .{},
+};
+
+pub const RawSandbox = struct {
+    sandbox: bool = true,
+    network_client: bool = false,
+    network_server: bool = false,
+    files_user_selected_read: bool = false,
+    files_user_selected_write: bool = false,
+    file_read: []const []const u8 = &.{},
+    file_write: []const []const u8 = &.{},
+    camera: bool = false,
+    microphone: bool = false,
+    usb: bool = false,
+    printing: bool = false,
+    allow_jit: bool = true,
+    custom: bool = false,
 };
 
 pub const RawNavigation = struct {
