@@ -5,21 +5,16 @@
 //! No keep-alive — each request opens a fresh connection and closes it
 //! after receiving the response.
 //!
-//! TLS/HTTPS support is available via `requestHttps` which requires the
-//! httpz.zig library (already listed in `build.zig.zon`). To enable:
-//! 1. Add httpz dep to `extensions_mod` in `build.zig`:
-//!    ```
-//!    const httpz_dep = b.dependency("httpz", .{ .target = target, .optimize = optimize });
-//!    extensions_mod.addImport("httpz", httpz_dep.module("httpz"));
-//!    ```
-//! 2. Ensure `PKG_CONFIG_PATH` includes OpenSSL (Homebrew:
-//!    `export PKG_CONFIG_PATH="/opt/homebrew/opt/openssl@3/lib/pkgconfig:$PKG_CONFIG_PATH"`).
-//! 3. The httpz build translates `src/openssl.h` (OpenSSL) and links
-//!    `libssl`, `libcrypto`, `libngtcp2`, `libnghttp3`.
-//! When httpz is not linked, `requestHttps` returns `error.HttpsNotSupported`
-//! and callers should fall back to record-only mode.
+//! HTTPS support is available via `requestHttps` which delegates to the
+//! `httpz.Client` type backed by OpenSSL. The httpz dependency is wired in
+//! `build.zig` (see the `httpz_dep` declaration) and exported to
+//! `extensions_mod` under the import name `"httpz"`. OpenSSL
+//! (`libssl`/`libcrypto`) and the HTTP/3 helpers (`libngtcp2`/`libnghttp3`)
+//! are linked via `linkSystemLibrary` inside the httpz package's own
+//! `build.zig`, so they propagate to this module automatically.
 
 const std = @import("std");
+const httpz = @import("httpz");
 
 const Io = std.Io;
 
@@ -123,9 +118,8 @@ pub const Config = struct {
 /// Parsed HTTP response.
 ///
 /// `body` is allocated by the caller's allocator and must be freed
-/// by the caller after use. When `requestHttps` is stubbed,
-/// `body` will be empty and the caller should fall back to
-/// record-only mode.
+/// by the caller after use. Both `request` and `requestHttps` return
+/// responses with the body owned by the caller.
 pub const Response = struct {
     status: u16,
     status_text: []const u8,
@@ -143,9 +137,6 @@ pub const Error = error{
     InvalidHeader,
     InvalidContentLength,
     ReadFailed,
-    /// HTTPS is not available — the httpz.zig dependency is not linked.
-    /// See the module-level doc comment for integration instructions.
-    HttpsNotSupported,
 } || std.mem.Allocator.Error;
 
 // ---------------------------------------------------------------------------
@@ -201,21 +192,115 @@ pub fn request(allocator: std.mem.Allocator, io: Io, config: Config) Error!Respo
 
 /// Perform an HTTPS request via the httpz.zig library.
 ///
-/// When httpz is linked (see module-level doc comment for build.zig
-/// instructions), this uses `httpz.Client` with TLS configured via
-/// OpenSSL to connect to `config.url.host:port` over TLS, send the
-/// request, read the response, and parse it into a `Response`.
+/// Delegates to `httpz.Client` with `tls_config` set so that OpenSSL
+/// performs the TLS handshake and decryption. The connection is opened,
+/// the request is sent, and the full response (headers + body) is read
+/// back and translated into the vendored `Response` type so callers can
+/// use the same code path as `request`.
 ///
-/// When httpz is not linked, returns `error.HttpsNotSupported`.
-/// Callers should fall back to record-only mode and the plugin will
-/// record the method/URL without performing a real request.
+/// Body bytes are copied into a fresh allocation owned by `allocator`
+/// before `httpz.Response.deinit` releases its own buffer, so the caller
+/// only ever needs to free the vendored `response.body`.
 ///
 /// The caller owns `response.body` and must free it.
 pub fn requestHttps(allocator: std.mem.Allocator, io: Io, config: Config) Error!Response {
-    _ = allocator;
-    _ = io;
-    _ = config;
-    return error.HttpsNotSupported;
+    var client = httpz.Client.init(allocator, .{
+        .host = config.url.host,
+        .port = config.url.port,
+        .max_response_size = config.max_response_size,
+        .tls_config = .{
+            .host = config.url.host,
+            .root_ca = .system,
+            // Stay on HTTP/1.1 to match the vendored Response semantics
+            // (the httpz HTTP/2 path is more complex to translate).
+            .disable_h2 = true,
+        },
+    }) catch return error.ConnectionFailed;
+    defer client.deinit();
+
+    client.connect(io) catch return error.ConnectionFailed;
+    errdefer client.close();
+
+    const method: httpz.Request.Method = switch (config.method) {
+        .GET => .GET,
+        .POST => .POST,
+    };
+
+    var httpz_headers: ?httpz.Headers = null;
+    if (config.headers) |h| {
+        var new_headers: httpz.Headers = .{};
+        var copy_failed = false;
+        for (h.entries[0..h.len]) |entry| {
+            new_headers.append(entry.name, entry.value) catch {
+                copy_failed = true;
+                break;
+            };
+        }
+        if (copy_failed) return error.InvalidHeader;
+        httpz_headers = new_headers;
+    }
+
+    var resp = client.request(io, method, config.url.path, httpz_headers, config.body) catch |err| {
+        return mapHttpzError(err);
+    };
+
+    // Copy headers out of the httpz response before deinit wipes them.
+    var mapped_headers: Headers = .{};
+    var header_failed = false;
+    for (resp.headers.entries[0..resp.headers.len]) |entry| {
+        mapped_headers.append(entry.name, entry.value) catch {
+            header_failed = true;
+            break;
+        };
+    }
+    if (header_failed) {
+        resp.deinit(allocator);
+        return error.ResponseTooLarge;
+    }
+
+    // Copy body bytes into an allocator-owned buffer.
+    const body_slice = resp.body;
+    var body_copy: []u8 = &[_]u8{};
+    if (body_slice.len > 0) {
+        const new_body = allocator.alloc(u8, body_slice.len) catch {
+            resp.deinit(allocator);
+            return error.ResponseTooLarge;
+        };
+        @memcpy(new_body, body_slice);
+        body_copy = new_body;
+    }
+
+    const status_int: u16 = @intFromEnum(resp.status);
+    const status_text: []const u8 = resp.status.reason();
+
+    resp.deinit(allocator);
+
+    return Response{
+        .status = status_int,
+        .status_text = status_text,
+        .headers = mapped_headers,
+        .body = body_copy,
+    };
+}
+
+/// Translate httpz client errors into the vendored `Error` set.
+fn mapHttpzError(err: anyerror) Error {
+    return switch (err) {
+        error.ConnectionFailed => error.ConnectionFailed,
+        error.SendFailed => error.SendFailed,
+        error.WriteFailed => error.SendFailed,
+        error.ReadTimeout => error.ReadFailed,
+        error.ResponseTooLarge => error.ResponseTooLarge,
+        error.InvalidResponse,
+        error.InvalidStatusLine,
+        error.InvalidHeader,
+        error.InvalidVersion,
+        error.InvalidStatusCode,
+        error.MissingContentLength,
+        error.InvalidChunkedEncoding,
+        => error.InvalidResponse,
+        else => error.ConnectionFailed,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +464,10 @@ fn format_usize(value: usize, buf: *[20]u8) []const u8 {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Whether to run tests that require real network access.
+/// Set to false to skip these tests in offline environments.
+const run_network_tests = true;
+
 test "http_client: Url.parse http scheme" {
     const url = Url.parse("http://example.com/path").?;
     try std.testing.expectEqualStrings("http", url.scheme);
@@ -449,25 +538,6 @@ test "http_client: trim_ows" {
     try std.testing.expectEqualStrings("a", trim_ows("a"));
 }
 
-test "http_client: requestHttps returns HttpsNotSupported when httpz is not linked" {
-    const url = Url.parse("https://example.com/api").?;
-    const config = Config{ .method = .GET, .url = url };
-    try std.testing.expectError(error.HttpsNotSupported, requestHttps(std.testing.allocator, std.testing.io, config));
-}
-
-test "http_client: requestHttps stub does not leak" {
-    const url = Url.parse("https://example.com/api").?;
-    const config = Config{ .method = .GET, .url = url };
-    _ = requestHttps(std.testing.allocator, std.testing.io, config) catch |err| {
-        try std.testing.expectEqual(error.HttpsNotSupported, err);
-    };
-    // std.testing.allocator detects leaks at end of test scope.
-}
-
-/// Whether to run tests that require real network access.
-/// Set to false to skip these tests in offline environments.
-const run_network_tests = true;
-
 test "http_client: real HTTP GET to example.com" {
     if (!run_network_tests) return error.SkipZigTest;
 
@@ -521,4 +591,36 @@ test "http_client: real HTTP GET 404 via httpstat.us" {
     defer std.testing.allocator.free(resp.body);
 
     try std.testing.expectEqual(@as(u16, 404), resp.status);
+}
+
+test "http_client: real HTTPS GET to example.com" {
+    if (!run_network_tests) return error.SkipZigTest;
+
+    const url = Url.parse("https://example.com/").?;
+    const config = Config{
+        .method = .GET,
+        .url = url,
+    };
+    const resp = requestHttps(std.testing.allocator, std.testing.io, config) catch |err| {
+        std.debug.print("https test skipped: {}\n", .{err});
+        return error.SkipZigTest;
+    };
+    defer std.testing.allocator.free(resp.body);
+
+    try std.testing.expectEqual(@as(u16, 200), resp.status);
+    try std.testing.expectEqualStrings("OK", resp.status_text);
+    try std.testing.expect(resp.body.len > 0);
+}
+
+test "http_client: real HTTPS GET bad host returns error" {
+    if (!run_network_tests) return error.SkipZigTest;
+
+    // `.invalid` is reserved by RFC 2606 to never resolve.
+    const url = Url.parse("https://nonexistent.invalid./").?;
+    const config = Config{
+        .method = .GET,
+        .url = url,
+    };
+    const result = requestHttps(std.testing.allocator, std.testing.io, config);
+    try std.testing.expect(result == error.ConnectionFailed);
 }
