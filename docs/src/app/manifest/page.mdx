@@ -116,7 +116,13 @@ restore_state = true
       <td><code>capabilities</code></td>
       <td>string[]</td>
       <td><code>[]</code></td>
-      <td>Feature declarations such as <code>webview</code>, <code>js_bridge</code>, <code>native_module</code> (see <a href="/security">Security</a>)</td>
+      <td>Feature declarations such as <code>webview</code>, <code>js_bridge</code>, <code>native_module</code> (see <a href="/security">Security</a> and <a href="/capabilities">Capabilities</a>)</td>
+    </tr>
+    <tr>
+      <td><code>structured capabilities</code></td>
+      <td>object[]</td>
+      <td><code>[]</code></td>
+      <td>Per-window security policies. Each entry has <code>identifier</code>, optional <code>description</code>, <code>windows</code>, and <code>permissions</code> with allow/deny scope globs (see <a href="/capabilities">Capabilities</a>)</td>
     </tr>
     <tr>
       <td><code>bridge.commands</code></td>

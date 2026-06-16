@@ -6,7 +6,7 @@
     .icons = .{ "assets/icon.icns", "assets/icon.ico" },
     .platforms = .{ "macos" },
     .permissions = .{ "window" },
-    .capabilities = .{ "webview", "js_bridge", "native_module" },
+    .feature_capabilities = .{ "webview", "js_bridge", "native_module" },
     .bridge = .{
         .commands = .{
             .{ .name = "native.ping", .origins = .{ "zero://inline", "zero://app" } },

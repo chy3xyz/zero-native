@@ -8,13 +8,21 @@ pub const RawManifest = struct {
     icons: []const []const u8 = &.{},
     platforms: []const []const u8 = &.{},
     permissions: []const []const u8 = &.{},
-    capabilities: []const []const u8 = &.{},
+    /// Simple feature flags (e.g. "webview", "js_bridge") used for
+    /// package-level capability validation. These are distinct from the
+    /// structured `capabilities` list, which carries per-window security
+    /// policies consumed at runtime.
+    feature_capabilities: []const []const u8 = &.{},
     bridge: RawBridge = .{},
     web_engine: []const u8 = @tagName(web_engine.default_engine),
     cef: RawCef = .{},
     frontend: ?RawFrontend = null,
     security: RawSecurity = .{},
     windows: []const RawWindow = &.{},
+    /// Structured per-window security capabilities. Each entry describes
+    /// a named capability, the windows it targets, and the granular
+    /// permissions it grants with allow/deny scope globs.
+    capabilities: []const RawSecurityCapability = &.{},
 };
 
 pub const RawCef = struct {
@@ -68,4 +76,32 @@ pub const RawWindow = struct {
     x: ?f32 = null,
     y: ?f32 = null,
     restore_state: bool = true,
+};
+
+/// Structured security capability entry. Mirrors
+/// `security.capability.Capability` but uses borrowed string slices and
+/// string-typed scope kinds so the ZON parser can populate it directly.
+pub const RawSecurityCapability = struct {
+    identifier: []const u8,
+    description: []const u8 = "",
+    windows: []const []const u8 = &.{},
+    permissions: []const RawSecurityPermission = &.{},
+};
+
+pub const RawSecurityPermission = struct {
+    identifier: []const u8,
+    scopes: RawSecurityScopeSet = .{},
+};
+
+pub const RawSecurityScopeSet = struct {
+    allow: []const RawSecurityScope = &.{},
+    deny: []const RawSecurityScope = &.{},
+};
+
+/// Scope kind is stored as a string ("path" or "url") so the ZON parser
+/// does not need enum metadata; the manifest parser converts to
+/// `capability.ScopeKind` while copying the strings into the allocator.
+pub const RawSecurityScope = struct {
+    kind: []const u8,
+    pattern: []const u8,
 };

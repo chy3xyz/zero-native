@@ -1,0 +1,274 @@
+# Capabilities
+
+Structured, per-window security policies for zero-native apps. Capabilities extend the coarse `permissions` list in the manifest with explicit window targets and per-permission allow/deny scope globs.
+
+## Why capabilities
+
+The base `permissions` field grants broad features such as `filesystem` or `network`. A `capabilities` entry narrows that grant to specific windows and specific paths or origins. The runtime denies by default: a window can only invoke a bridge command when a capability on its label explicitly allows the command and the origin matches the permission's URL scopes.
+
+Capabilities coexist with the existing `permissions` list. If a manifest declares no `capabilities`, the runtime uses the legacy `permissions` policy unchanged. As soon as a single `capabilities` entry appears, the per-window lookup is authoritative and the legacy `permissions` list is bypassed for those checks.
+
+## Schema
+
+```toml
+[[capabilities]]
+identifier = "main-window-fs"
+description = "Read-only filesystem access for the main window"
+windows = ["main"]
+permissions = [
+    { identifier = "fs:allow-read-text-file", scopes = { allow = [{ kind = "path", pattern = "$APPDATA/**" }], deny = [{ kind = "path", pattern = "$APPDATA/secret/**" }] } },
+    { identifier = "network:allow-fetch", scopes = { allow = [{ kind = "url", pattern = "https://api.example.com/**" }] } },
+]
+
+[[capabilities]]
+identifier = "anywhere-clipboard"
+windows = ["*"]
+permissions = [
+    { identifier = "clipboard:allow-read-text" },
+]
+```
+
+The same shape is written in ZON (`.zon`) and JSON. The fields are:
+
+<table>
+  <thead>
+    <tr>
+      <th>Field</th>
+      <th>Type</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>identifier</code></td>
+      <td>string (required)</td>
+      <td>Unique identifier for this capability within the manifest</td>
+    </tr>
+    <tr>
+      <td><code>description</code></td>
+      <td>string</td>
+      <td>Human-readable summary of what the capability grants</td>
+    </tr>
+    <tr>
+      <td><code>windows</code></td>
+      <td>string[] (required)</td>
+      <td>Window labels this capability applies to. Use <code>"*"</code> to mean "all windows". An exact label match wins over <code>"*"</code></td>
+    </tr>
+    <tr>
+      <td><code>permissions</code></td>
+      <td>object[]</td>
+      <td>Permissions granted by this capability. Each entry has an <code>identifier</code> and optional <code>scopes</code></td>
+    </tr>
+  </tbody>
+</table>
+
+### Permission
+
+```toml
+{ identifier = "fs:allow-read-text-file", scopes = { allow = [...], deny = [...] } }
+```
+
+<table>
+  <thead>
+    <tr>
+      <th>Field</th>
+      <th>Type</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>identifier</code></td>
+      <td>string (required)</td>
+      <td>Permission identifier, e.g. <code>fs:allow-read-text-file</code>, <code>network:allow-fetch</code>, or a custom reverse-DNS name</td>
+    </tr>
+    <tr>
+      <td><code>scopes</code></td>
+      <td>object</td>
+      <td>Allow/deny scopes. Defaults to deny-all when omitted</td>
+    </tr>
+  </tbody>
+</table>
+
+### Scope
+
+```toml
+{ kind = "path", pattern = "$APPDATA/**" }
+```
+
+<table>
+  <thead>
+    <tr>
+      <th>Field</th>
+      <th>Type</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>kind</code></td>
+      <td>string (required)</td>
+      <td>Either <code>"path"</code> (filesystem glob) or <code>"url"</code> (origin glob)</td>
+    </tr>
+    <tr>
+      <td><code>pattern</code></td>
+      <td>string (required)</td>
+      <td>Glob pattern. May contain <code>$</code>-prefixed variables (see <a href="#scope-variables">Scope variables</a>)</td>
+    </tr>
+  </tbody>
+</table>
+
+## Deny overrides allow
+
+For path scopes, a path that matches any `deny` entry is denied even if it also matches an `allow` entry. Use this to grant broad access and then carve out exceptions:
+
+```toml
+permissions = [
+    {
+        identifier = "fs:allow-read-text-file",
+        scopes = {
+            allow = [{ kind = "path", pattern = "$HOME/**" }],
+            deny = [{ kind = "path", pattern = "$HOME/.ssh/**" }],
+        },
+    },
+]
+```
+
+The same rule applies to URL scopes: a matching `deny` URL denies the command even if an `allow` URL matches.
+
+A scope set with no `allow` entries is deny-by-default. An empty `scopes` object on a permission grants the permission for the window without any origin or path check.
+
+## Scope variables
+
+Patterns may include `$`-prefixed variables. The runtime resolves them from the platform's `ScopeVars` before matching.
+
+<table>
+  <thead>
+    <tr>
+      <th>Variable</th>
+      <th>Resolves to</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>$APPDATA</code></td>
+      <td>Per-user, per-app data directory</td>
+    </tr>
+    <tr>
+      <td><code>$APPLOCALDATA</code></td>
+      <td>Per-app, machine-local data directory (not synced, not backed up)</td>
+    </tr>
+    <tr>
+      <td><code>$APPCONFIG</code></td>
+      <td>Per-app configuration directory</td>
+    </tr>
+    <tr>
+      <td><code>$APPLOG</code></td>
+      <td>Per-app log directory</td>
+    </tr>
+    <tr>
+      <td><code>$RESOURCE</code></td>
+      <td>Packaged app resource directory</td>
+    </tr>
+    <tr>
+      <td><code>$APP</code></td>
+      <td>App identifier (e.g. <code>com.example.myapp</code>)</td>
+    </tr>
+    <tr>
+      <td><code>$HOME</code></td>
+      <td>User home directory</td>
+    </tr>
+    <tr>
+      <td><code>$TEMP</code></td>
+      <td>System temporary directory</td>
+    </tr>
+  </tbody>
+</table>
+
+Longer variable names win when multiple could match at the same position. For example, `$APPDATA` is preferred over `$APP` at the start of a pattern, so `$APPDATA-x` expands `<appdata>` then `-x`, not `<app>` then `-DATA-x`. Unknown variables are preserved verbatim. Unset variables expand to the empty string, so `$TEMP/x` becomes `/x` when the temp directory is unknown.
+
+## Glob syntax
+
+Path and URL patterns use the same glob syntax:
+
+<table>
+  <thead>
+    <tr>
+      <th>Token</th>
+      <th>Matches</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>*</code></td>
+      <td>Any run of characters that does not contain <code>/</code></td>
+    </tr>
+    <tr>
+      <td><code>**</code></td>
+      <td>Any run of characters including <code>/</code></td>
+    </tr>
+    <tr>
+      <td><code>?</code></td>
+      <td>Exactly one character that is not <code>/</code></td>
+    </tr>
+    <tr>
+      <td>anything else</td>
+      <td>Literal match</td>
+    </tr>
+  </tbody>
+</table>
+
+Use `**` at the end of a path prefix to match every file inside a directory: `$APPDATA/**` matches every file under the app data directory. Use a single `*` to match files in a single directory only: `assets/*` does not match `assets/icons/file.png`. There is no backslash escaping; treat special characters literally by avoiding them in patterns.
+
+## Per-window targeting
+
+`windows` is a list of labels. The runtime looks up the current window by its label and uses the first capability whose `windows` list contains that label. If no exact label match exists, the runtime falls back to a capability that lists `"*"`. If neither is found, the command is denied.
+
+```toml
+[[capabilities]]
+identifier = "main-fs"
+windows = ["main"]
+permissions = [{ identifier = "fs:allow-read-text-file" }]
+
+[[capabilities]]
+identifier = "settings-fs"
+windows = ["settings"]
+permissions = [{ identifier = "fs:allow-read-text-file" }]
+```
+
+In this example, the `main` window can read files but the `settings` window cannot, even though both have a capability for the same permission.
+
+A `"*"` entry acts as a catch-all for any window that does not have a more specific capability:
+
+```toml
+[[capabilities]]
+identifier = "main-clipboard"
+windows = ["main"]
+permissions = [{ identifier = "clipboard:allow-read-text" }]
+
+[[capabilities]]
+identifier = "shared-clipboard"
+windows = ["*"]
+permissions = [{ identifier = "clipboard:allow-write-text" }]
+```
+
+Every window can write to the clipboard, but only `main` can read it.
+
+## Command vs path checks
+
+The runtime uses two different lookups for bridge commands and filesystem operations:
+
+- **Command lookup** (e.g. `fs:allow-read-text-file` triggered by a bridge call): the runtime uses the window's capability and matches the request's origin against the permission's `url` scopes. Path scopes are ignored for command lookups.
+- **Path lookup** (e.g. opening a file the user just picked): the runtime uses the window's capability and matches the resolved path against the permission's `path` scopes. URL scopes are ignored for path lookups.
+
+A permission with no `scopes` at all grants the command regardless of origin (for command lookups) and any path (for path lookups) within the matched window.
+
+## Runtime trace
+
+When a capability denies a bridge command, the runtime emits a `security.command_denied` trace event with `command`, `origin`, and `window` fields. The event name is stable; consume it from your trace sink to debug denials.
+
+## See also
+
+- [Manifest Reference](/manifest) -- full `app.zon` schema, including where `capabilities` lives in the file
+- [Security](/security) -- `permissions`, bridge policies, navigation rules, and the security model summary
+- [Bridge](/bridge) -- the bridge protocol and how commands are dispatched

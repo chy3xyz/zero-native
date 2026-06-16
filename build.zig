@@ -134,6 +134,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(embed_lib);
 
     const automation_protocol_mod = module(b, target, optimize, "src/automation/protocol.zig");
+    const security_mod = module(b, target, optimize, "src/security/root.zig");
     const tooling_mod = module(b, target, optimize, "src/tooling/root.zig");
     tooling_mod.addImport("assets", assets_mod);
     tooling_mod.addImport("app_dirs", app_dirs_mod);
@@ -142,6 +143,7 @@ pub fn build(b: *std.Build) void {
     tooling_mod.addImport("debug", debug_mod);
     tooling_mod.addImport("platform_info", platform_info_mod);
     tooling_mod.addImport("trace", trace_mod);
+    tooling_mod.addImport("security", security_mod);
     const tooling_tests = testArtifact(b, tooling_mod);
 
     const cli_mod = module(b, target, optimize, "tools/zero-native/main.zig");
