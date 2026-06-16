@@ -77,6 +77,9 @@ pub const Runtime = struct {
     async_bridge_responses: [max_async_bridge_responses]AsyncBridgeResponseSlot = @splat(.{}),
     /// Scratch buffer used to publish automation snapshots. INTERNAL: not thread-safe.
     automation_windows: [automation.snapshot.max_windows]automation.snapshot.Window = undefined,
+    /// Atomic counter for stream ids handed out by `createStreamChannel`.
+    /// Thread-safe so concurrent channel allocations produce distinct ids.
+    next_stream_id: std.atomic.Value(u64) = std.atomic.Value(u64).init(1),
 
     /// Creates a runtime backed by the supplied options and platform surface.
     pub fn init(options: options_mod.Options) Runtime {
@@ -205,15 +208,35 @@ pub const Runtime = struct {
     /// frames through the platform bridge for the given window and webview.
     /// The caller is responsible for calling `channel.close()` when the stream is done.
     ///
-    /// TODO(W11): Wire the writer to call `self.completeBridgeResponse(window_id, webview_label, frame_json)`.
-    /// Until then callers should construct a `bridge.Channel(T)` directly with a writer
-    /// that routes frames through their own bridge response path. See the channel module
-    /// tests for a working example of the full round-trip.
+    /// The returned channel owns a heap-allocated `StreamWriterContext` that
+    /// captures the runtime pointer and the target window/webview. The context
+    /// is leaked for now — a follow-up `Runtime.closeStreamChannel` (or a
+    /// finalizer on the channel itself) will free it. Until then the runtime
+    /// pins one allocation per channel created; this is acceptable for the
+    /// minimal API surface established here.
     pub fn createStreamChannel(comptime T: type, self: *Runtime, window_id: platform.WindowId, webview_label: []const u8) !bridge.Channel(T) {
-        _ = self;
-        _ = window_id;
-        _ = webview_label;
-        return error.StreamChannelsNotYetImplemented;
+        // 1. Atomically allocate a new StreamId.
+        const id = self.next_stream_id.fetchAdd(1, .monotonic);
+
+        // 2. Allocate the writer context on the heap so the returned channel
+        //    can safely outlive this stack frame. errdefer keeps the allocator
+        //    tidy if anything below fails.
+        const ctx = try std.heap.page_allocator.create(StreamWriterContext);
+        ctx.* = .{
+            .runtime = self,
+            .window_id = window_id,
+            .webview_label = webview_label,
+        };
+
+        // 3. Return the channel wired through `completeBridgeResponse`. The
+        //    `writer_ctx` pointer is borrowed for the lifetime of the channel
+        //    (and is intentionally leaked — see the doc comment above).
+        return bridge.Channel(T){
+            .id = id,
+            .writer = StreamWriterContext.write,
+            .writer_ctx = @ptrCast(ctx),
+            .allocator = std.heap.page_allocator,
+        };
     }
 
     /// Dispatches a platform event into the runtime state machine.
@@ -1480,6 +1503,33 @@ const AsyncBridgeResponseSlot = struct {
     }
 };
 
+/// Writer context captured by `Runtime.createStreamChannel` and stored as the
+/// `writer_ctx` on the returned `bridge.Channel(T)`. The static `write`
+/// function is what `bridge.Channel(T).send` and `close` ultimately call.
+///
+/// INTERNAL: lifetime is tied to the channel. The runtime allocates one of
+/// these per channel on the heap (page allocator) and intentionally does not
+/// free it today — a follow-up `Runtime.closeStreamChannel` will close that
+/// gap. The context itself is only mutated at construction time, so it is
+/// safe for the channel writer to read it concurrently from any thread.
+const StreamWriterContext = struct {
+    runtime: *Runtime,
+    window_id: platform.WindowId,
+    /// Borrowed label of the destination webview. The caller is expected to
+    /// keep this storage alive for the lifetime of the channel — for the
+    /// minimal implementation we accept the constraint and document it.
+    webview_label: []const u8,
+
+    /// Delivers `frame_json` to the captured window/webview via the runtime's
+    /// `completeBridgeResponse` helper. Mirrors the path that synchronous and
+    /// async bridge dispatch use, so stream frames show up in the same bridge
+    /// response sink as command replies.
+    fn write(ctx: *anyopaque, frame_json: []const u8) anyerror!void {
+        const self: *StreamWriterContext = @ptrCast(@alignCast(ctx));
+        try self.runtime.completeBridgeResponse(self.window_id, self.webview_label, frame_json);
+    }
+};
+
 fn copyInto(buffer: []u8, value: []const u8) ![]const u8 {
     if (value.len > buffer.len) return error.NoSpaceLeft;
     @memcpy(buffer[0..value.len], value);
@@ -2743,6 +2793,33 @@ test "runtime logs security.csp_injected when injection succeeds" {
         }
     }
     try std.testing.expect(saw_injected);
+}
+
+test "runtime stream channel allocates unique ids and delivers frames" {
+    var harness: TestHarness() = undefined;
+    harness.init(.{});
+
+    // Two channels should receive distinct, monotonically-increasing ids.
+    var channel_a = try Runtime.createStreamChannel(i32, &harness.runtime, 1, "main");
+    var channel_b = try Runtime.createStreamChannel(i32, &harness.runtime, 1, "main");
+    try std.testing.expect(channel_a.id != channel_b.id);
+    try std.testing.expect(channel_a.id < channel_b.id);
+
+    // Sending through the channel routes a value frame through
+    // `completeBridgeResponse`, which records it on the NullPlatform.
+    try channel_a.send(42);
+
+    const response = harness.null_platform.lastBridgeResponse();
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"stream\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"kind\":\"value\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"payload\":42") != null);
+    try std.testing.expectEqual(@as(platform.WindowId, 1), harness.null_platform.lastBridgeResponseWindowId());
+    try std.testing.expectEqualStrings("main", harness.null_platform.lastBridgeResponseWebViewLabel());
+
+    // `close` delivers an end frame and marks the channel as closed.
+    try channel_b.close();
+    try std.testing.expect(!channel_b.isOpen());
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"kind\":\"end\"") != null);
 }
 
 test {

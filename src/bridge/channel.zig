@@ -70,16 +70,16 @@ pub fn Channel(comptime T: type) type {
 /// Works with integers, floats, bools, and byte slices.
 fn serializeValue(comptime T: type, buffer: []u8, value: T) ![]const u8 {
     switch (@typeInfo(T)) {
-        .Int, .ComptimeInt => {
+        .int, .comptime_int => {
             return std.fmt.bufPrint(buffer, "{d}", .{value});
         },
-        .Float, .ComptimeFloat => {
+        .float, .comptime_float => {
             return std.fmt.bufPrint(buffer, "{d}", .{value});
         },
-        .Bool => {
+        .bool => {
             return if (value) "true" else "false";
         },
-        .Pointer => |ptr| {
+        .pointer => |ptr| {
             if (ptr.size == .Slice and ptr.child == u8) {
                 var writer = std.Io.Writer.fixed(buffer);
                 try json.writeString(&writer, value);
@@ -103,7 +103,7 @@ test "channel module" {
         fn write(ctx: *anyopaque, frame_json: []const u8) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
             const copy = try self.allocator.dupe(u8, frame_json);
-            try self.frames.append(copy);
+            try self.frames.append(self.allocator, copy);
         }
     };
 
@@ -129,12 +129,12 @@ test "channel module" {
     // 2. Channel(i32).send(42) → writer receives a value frame.
     {
         var sink = TestSink{
-            .frames = std.ArrayList([]u8).init(std.testing.allocator),
+            .frames = .empty,
             .allocator = std.testing.allocator,
         };
         defer {
             for (sink.frames.items) |f| std.testing.allocator.free(f);
-            sink.frames.deinit();
+            sink.frames.deinit(sink.allocator);
         }
 
         var channel: Channel(i32) = .{
@@ -156,12 +156,12 @@ test "channel module" {
     // 3. Multiple sends produce separate frames.
     {
         var sink = TestSink{
-            .frames = std.ArrayList([]u8).init(std.testing.allocator),
+            .frames = .empty,
             .allocator = std.testing.allocator,
         };
         defer {
             for (sink.frames.items) |f| std.testing.allocator.free(f);
-            sink.frames.deinit();
+            sink.frames.deinit(sink.allocator);
         }
 
         var channel: Channel(i32) = .{
@@ -192,12 +192,12 @@ test "channel module" {
     // 4. close → writer receives an end frame.
     {
         var sink = TestSink{
-            .frames = std.ArrayList([]u8).init(std.testing.allocator),
+            .frames = .empty,
             .allocator = std.testing.allocator,
         };
         defer {
             for (sink.frames.items) |f| std.testing.allocator.free(f);
-            sink.frames.deinit();
+            sink.frames.deinit(sink.allocator);
         }
 
         var channel: Channel(i32) = .{
@@ -220,12 +220,12 @@ test "channel module" {
     // 5. close twice → exactly one end frame.
     {
         var sink = TestSink{
-            .frames = std.ArrayList([]u8).init(std.testing.allocator),
+            .frames = .empty,
             .allocator = std.testing.allocator,
         };
         defer {
             for (sink.frames.items) |f| std.testing.allocator.free(f);
-            sink.frames.deinit();
+            sink.frames.deinit(sink.allocator);
         }
 
         var channel: Channel(i32) = .{
@@ -250,12 +250,12 @@ test "channel module" {
     // 6. isOpen reflects state.
     {
         var sink = TestSink{
-            .frames = std.ArrayList([]u8).init(std.testing.allocator),
+            .frames = .empty,
             .allocator = std.testing.allocator,
         };
         defer {
             for (sink.frames.items) |f| std.testing.allocator.free(f);
-            sink.frames.deinit();
+            sink.frames.deinit(sink.allocator);
         }
 
         var channel: Channel(i32) = .{

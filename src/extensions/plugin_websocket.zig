@@ -2,16 +2,20 @@
 //!
 //! Implements a minimal WebSocket client with two layers:
 //!
-//! 1. Core utilities (`encodeClientHandshake`, `decodeHandshakeResponse`,
-//!    `encodeFrame`, `decodeFrame`) that provide pure RFC 6455 primitives.
+//! 1. Core utilities (`parseWsUrl`, `encodeClientHandshake`,
+//!    `decodeHandshakeResponse`, `encodeFrame`, `decodeFrame`) that provide
+//!    pure RFC 6455 primitives.
 //!
 //! 2. Plugin layer (`websocket.connect` / `websocket.send` / `websocket.close`)
-//!    that holds connection state and records frames for test inspection.
-//!    Real TCP I/O is deferred — the plugin records intent and produced frames.
+//!    that holds connection state and records parsed URL parts + outbound
+//!    frames for test inspection. Real TCP I/O is deferred — see the TODO
+//!    in `handleConnect`.
 //!
 //! Commands are routed by `cmd.name`; payload lives in `cmd.payload`:
-//! - `websocket.connect` — `cmd.payload` is `"host:port/path"`. Sets
-//!   `connected = true`.
+//! - `websocket.connect` — `cmd.payload` is a `ws://` or `wss://` URL. The
+//!   parsed host/port/path/secure are recorded in `last_host` / `last_port` /
+//!   `last_path` / `last_secure`, and `connected` is set to `true`. Invalid
+//!   URLs set `connected = false` without raising an error.
 //! - `websocket.send`    — `cmd.payload` is the message text. Encodes a text
 //!   frame and records it in `last_sent_frame`.
 //! - `websocket.close`   — sets `connected = false`.
@@ -45,6 +49,69 @@ pub const Frame = struct {
     payload: []const u8,
     fin: bool,
 };
+
+/// Parsed WebSocket URL components.
+///
+/// The slices reference the input string and do not need to be freed; the
+/// caller owns the input for the lifetime of the returned `WsUrl`.
+pub const WsUrl = struct {
+    host: []const u8,
+    port: u16,
+    path: []const u8,
+    /// True for `wss://` URLs, false for `ws://`.
+    secure: bool,
+
+    /// Parse a `ws://` or `wss://` URL string into its components.
+    ///
+    /// Returns `null` if the URL is malformed, has a non-WebSocket scheme,
+    /// or has an unparseable port. Default port is 80 for `ws://` and 443
+    /// for `wss://`. If no path is present, the path defaults to `"/"`.
+    ///
+    /// Examples:
+    /// - `"ws://localhost:8080/ws"` → host=`"localhost"`, port=8080, path=`"/ws"`, secure=false
+    /// - `"ws://example.com"`        → host=`"example.com"`, port=80,   path=`"/"`,    secure=false
+    /// - `"wss://example.com/api"`   → host=`"example.com"`, port=443,  path=`"/api"`, secure=true
+    pub fn parse(url_str: []const u8) ?WsUrl {
+        const scheme_end = std.mem.indexOf(u8, url_str, "://") orelse return null;
+        const scheme = url_str[0..scheme_end];
+
+        const is_ws = scheme.len == 2 and std.mem.eql(u8, scheme, "ws");
+        const is_wss = scheme.len == 3 and std.mem.eql(u8, scheme, "wss");
+        if (!is_ws and !is_wss) return null;
+
+        const default_port: u16 = if (is_wss) 443 else 80;
+
+        const after_scheme = url_str[scheme_end + 3 ..];
+        const path_start = std.mem.indexOfScalar(u8, after_scheme, '/') orelse after_scheme.len;
+        const host_port = after_scheme[0..path_start];
+        const path = if (path_start < after_scheme.len) after_scheme[path_start..] else "/";
+
+        const port_end = std.mem.indexOfScalar(u8, host_port, ':');
+        const host = if (port_end) |pe| host_port[0..pe] else host_port;
+        if (host.len == 0) return null;
+
+        const port = if (port_end) |pe|
+            std.fmt.parseInt(u16, host_port[pe + 1 ..], 10) catch return null
+        else
+            default_port;
+
+        return .{
+            .host = host,
+            .port = port,
+            .path = path,
+            .secure = is_wss,
+        };
+    }
+};
+
+/// Parse a `ws://` or `wss://` URL string into a `WsUrl`.
+///
+/// Convenience wrapper around `WsUrl.parse`. Returns `null` for malformed
+/// inputs. For `wss://`, `port` defaults to 443 and `secure = true`. For
+/// `ws://`, `port` defaults to 80 and `secure = false`.
+pub fn parseWsUrl(url_str: []const u8) ?WsUrl {
+    return WsUrl.parse(url_str);
+}
 
 // ── Base64 helpers (RFC 4648 standard alphabet) ─────────────────────────────
 
@@ -277,9 +344,23 @@ pub fn unmaskPayload(allocator: std.mem.Allocator, payload: []const u8, mask_key
 // ── Plugin state ────────────────────────────────────────────────────────────
 
 /// Mutable state owned by a WebSocket module instance.
+///
+/// All owned slices (`last_host`, `last_path`, `last_sent_frame`) are freed
+/// in `stop`. Real TCP I/O is deferred — `handleConnect` currently only
+/// records the parsed URL parts in the `last_*` fields.
 pub const WsState = struct {
+    /// True after a successful `websocket.connect` with a valid URL.
     connected: bool = false,
+    /// Most recently encoded outbound frame. Freed in `stop`.
     last_sent_frame: ?[]u8 = null,
+    /// Parsed host component from the most recent `websocket.connect` call.
+    last_host: ?[]u8 = null,
+    /// Parsed path component from the most recent `websocket.connect` call.
+    last_path: ?[]u8 = null,
+    /// Parsed port component from the most recent `websocket.connect` call.
+    last_port: u16 = 0,
+    /// True for `wss://`, false for `ws://`.
+    last_secure: bool = false,
     allocator: std.mem.Allocator,
 };
 
@@ -288,18 +369,24 @@ pub const WsState = struct {
 /// No-op startup hook.
 pub fn start(_: *anyopaque, _: extensions.RuntimeContext) anyerror!void {}
 
-/// Frees the last-sent frame buffer and the state itself.
+/// Frees the last-sent frame buffer, parsed URL parts, and destroys the
+/// state itself.
 pub fn stop(context: *anyopaque, _: extensions.RuntimeContext) anyerror!void {
     const state: *WsState = @ptrCast(@alignCast(context));
     if (state.last_sent_frame) |frame| state.allocator.free(frame);
+    if (state.last_host) |host| state.allocator.free(host);
+    if (state.last_path) |path| state.allocator.free(path);
     state.allocator.destroy(state);
 }
 
 // ── Command dispatch ────────────────────────────────────────────────────────
 
 /// Routes commands by `cmd.name`:
-/// - `websocket.connect` — records the URL and sets `connected = true`.
-/// - `websocket.send`    — encodes `cmd.payload` as a text frame and stores
+/// - `websocket.connect` — parses `cmd.payload` as a `ws://` or `wss://` URL,
+///   stores the parsed host/port/path/secure in `last_*`, and sets
+///   `connected = true`. Real TCP + handshake is deferred — see the TODO
+///   in `handleConnect`.
+/// - `websocket.send`    — encodes `cmd.payload` as a text frame and records
 ///   it in `last_sent_frame`.
 /// - `websocket.close`   — sets `connected = false`.
 pub fn command(
@@ -310,15 +397,83 @@ pub fn command(
     const state: *WsState = @ptrCast(@alignCast(context));
 
     if (std.mem.eql(u8, cmd.name, "websocket.connect")) {
-        _ = cmd.payload; // URL recorded as intent; TCP deferred.
-        state.connected = true;
+        handleConnect(state, cmd.payload);
     } else if (std.mem.eql(u8, cmd.name, "websocket.send")) {
-        if (state.last_sent_frame) |old| state.allocator.free(old);
-        // Encode a text frame with FIN=1.
-        state.last_sent_frame = try encodeFrame(state.allocator, cmd.payload, @intFromEnum(OpCode.text));
+        handleSend(state, cmd.payload);
     } else if (std.mem.eql(u8, cmd.name, "websocket.close")) {
-        state.connected = false;
+        handleClose(state);
     }
+}
+
+/// Parse `payload` as a `ws://` or `wss://` URL and record the parsed
+/// components in `state.last_host`, `state.last_port`, `state.last_path`,
+/// and `state.last_secure`. On a successful parse `state.connected` is set
+/// to `true`. On a parse failure `state.connected` is forced to `false`
+/// and the function returns without raising an error.
+///
+/// TODO: real TCP + handshake via `std.Io.NetStream` — currently the parsed
+/// URL is only recorded; no socket is opened and no RFC 6455 handshake is
+/// performed.
+fn handleConnect(state: *WsState, payload: []const u8) void {
+    const parsed = parseWsUrl(payload) orelse {
+        resetConnectionState(state);
+        return;
+    };
+
+    // Drop any prior connection state before allocating new owned slices.
+    resetConnectionState(state);
+
+    // Store parsed parts as owned slices.
+    const new_host = state.allocator.dupe(u8, parsed.host) catch {
+        state.connected = false;
+        return;
+    };
+    errdefer state.allocator.free(new_host);
+    const new_path = state.allocator.dupe(u8, parsed.path) catch {
+        state.allocator.free(new_host);
+        state.connected = false;
+        return;
+    };
+
+    state.last_host = new_host;
+    state.last_path = new_path;
+    state.last_port = parsed.port;
+    state.last_secure = parsed.secure;
+    state.connected = true;
+}
+
+/// Encode `payload` as a text frame and record it in `state.last_sent_frame`.
+fn handleSend(state: *WsState, payload: []const u8) void {
+    if (state.last_sent_frame) |old| state.allocator.free(old);
+    state.last_sent_frame = null;
+
+    const frame = encodeFrame(state.allocator, payload, @intFromEnum(OpCode.text)) catch return;
+    state.last_sent_frame = frame;
+}
+
+/// Reset `connected` to `false`. Real socket teardown is deferred.
+fn handleClose(state: *WsState) void {
+    state.connected = false;
+}
+
+/// Drop any prior connection state — free owned slices, clear flags. Used
+/// by `handleConnect` before recording a new URL or after a parse failure.
+fn resetConnectionState(state: *WsState) void {
+    if (state.last_sent_frame) |old| {
+        state.allocator.free(old);
+        state.last_sent_frame = null;
+    }
+    if (state.last_host) |old| {
+        state.allocator.free(old);
+        state.last_host = null;
+    }
+    if (state.last_path) |old| {
+        state.allocator.free(old);
+        state.last_path = null;
+    }
+    state.connected = false;
+    state.last_port = 0;
+    state.last_secure = false;
 }
 
 // ── Factory ─────────────────────────────────────────────────────────────────
@@ -327,7 +482,9 @@ pub fn command(
 pub fn create(allocator: std.mem.Allocator) !extensions.Module {
     const state = try allocator.create(WsState);
     errdefer allocator.destroy(state);
-    state.* = .{ .allocator = allocator };
+    state.* = .{
+        .allocator = allocator,
+    };
 
     const caps = [_]extensions.Capability{.{ .kind = .network, .name = "websocket" }};
     return .{
@@ -346,6 +503,72 @@ pub fn create(allocator: std.mem.Allocator) !extensions.Module {
 }
 
 // ── Tests: Core utilities ───────────────────────────────────────────────────
+
+test "WsUrl.parse handles ws:// with host port path" {
+    const url = WsUrl.parse("ws://example.com:8080/ws").?;
+    try std.testing.expectEqualStrings("example.com", url.host);
+    try std.testing.expectEqual(@as(u16, 8080), url.port);
+    try std.testing.expectEqualStrings("/ws", url.path);
+    try std.testing.expect(!url.secure);
+}
+
+test "WsUrl.parse defaults port and path for ws://" {
+    const url = WsUrl.parse("ws://example.com").?;
+    try std.testing.expectEqualStrings("example.com", url.host);
+    try std.testing.expectEqual(@as(u16, 80), url.port);
+    try std.testing.expectEqualStrings("/", url.path);
+    try std.testing.expect(!url.secure);
+}
+
+test "WsUrl.parse handles wss:// with default port" {
+    const url = WsUrl.parse("wss://secure.example.com/secure/path").?;
+    try std.testing.expectEqualStrings("secure.example.com", url.host);
+    try std.testing.expectEqual(@as(u16, 443), url.port);
+    try std.testing.expectEqualStrings("/secure/path", url.path);
+    try std.testing.expect(url.secure);
+}
+
+test "WsUrl.parse handles ws:// with explicit port and no path" {
+    const url = WsUrl.parse("ws://localhost:9090").?;
+    try std.testing.expectEqualStrings("localhost", url.host);
+    try std.testing.expectEqual(@as(u16, 9090), url.port);
+    try std.testing.expectEqualStrings("/", url.path);
+    try std.testing.expect(!url.secure);
+}
+
+test "WsUrl.parse rejects invalid inputs" {
+    try std.testing.expect(WsUrl.parse("") == null);
+    try std.testing.expect(WsUrl.parse("no-scheme") == null);
+    try std.testing.expect(WsUrl.parse("http://example.com") == null); // wrong scheme
+    try std.testing.expect(WsUrl.parse("ws://") == null); // empty host
+    try std.testing.expect(WsUrl.parse("ws://host:not-a-port/ws") == null);
+}
+
+test "parseWsUrl matches WsUrl.parse for ws:// with host port path" {
+    const expected: WsUrl = .{
+        .host = "example.com",
+        .port = 8080,
+        .path = "/path",
+        .secure = false,
+    };
+    const actual = parseWsUrl("ws://example.com:8080/path").?;
+    try std.testing.expectEqualStrings(expected.host, actual.host);
+    try std.testing.expectEqual(expected.port, actual.port);
+    try std.testing.expectEqualStrings(expected.path, actual.path);
+    try std.testing.expectEqual(expected.secure, actual.secure);
+}
+
+test "parseWsUrl handles wss:// with default port 443" {
+    const url = parseWsUrl("wss://api.example.com/graphql").?;
+    try std.testing.expectEqualStrings("api.example.com", url.host);
+    try std.testing.expectEqual(@as(u16, 443), url.port);
+    try std.testing.expectEqualStrings("/graphql", url.path);
+    try std.testing.expect(url.secure);
+}
+
+test "parseWsUrl returns null for invalid input" {
+    try std.testing.expect(parseWsUrl("invalid") == null);
+}
 
 test "encodeClientHandshake produces valid HTTP upgrade request" {
     const allocator = std.testing.allocator;
@@ -514,7 +737,7 @@ test "decodeFrame returns null on incomplete data" {
 
 // ── Tests: Plugin layer ─────────────────────────────────────────────────────
 
-test "websocket: connect sets connected" {
+test "websocket: connect sets connected for valid URL" {
     const allocator = std.testing.allocator;
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
@@ -526,9 +749,95 @@ test "websocket: connect sets connected" {
 
     try command(module.context, runtime, .{
         .name = "websocket.connect",
-        .payload = "localhost:8080/ws",
+        .payload = "ws://localhost:8080/ws",
     });
     try std.testing.expect(state.connected);
+}
+
+test "websocket: connect records parsed URL fields" {
+    const allocator = std.testing.allocator;
+    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+
+    const module = try create(allocator);
+    defer module.hooks.stop_fn.?(module.context, runtime) catch {};
+
+    const state: *WsState = @ptrCast(@alignCast(module.context));
+
+    try command(module.context, runtime, .{
+        .name = "websocket.connect",
+        .payload = "ws://example.com:9000/chat",
+    });
+
+    try std.testing.expect(state.connected);
+    try std.testing.expectEqualStrings("example.com", state.last_host.?);
+    try std.testing.expectEqualStrings("/chat", state.last_path.?);
+    try std.testing.expectEqual(@as(u16, 9000), state.last_port);
+    try std.testing.expect(!state.last_secure);
+}
+
+test "websocket: connect records wss as secure with port 443" {
+    const allocator = std.testing.allocator;
+    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+
+    const module = try create(allocator);
+    defer module.hooks.stop_fn.?(module.context, runtime) catch {};
+
+    const state: *WsState = @ptrCast(@alignCast(module.context));
+
+    try command(module.context, runtime, .{
+        .name = "websocket.connect",
+        .payload = "wss://api.example.com/graphql",
+    });
+
+    try std.testing.expect(state.connected);
+    try std.testing.expectEqualStrings("api.example.com", state.last_host.?);
+    try std.testing.expectEqualStrings("/graphql", state.last_path.?);
+    try std.testing.expectEqual(@as(u16, 443), state.last_port);
+    try std.testing.expect(state.last_secure);
+}
+
+test "websocket: connect ignores invalid URL without connecting" {
+    const allocator = std.testing.allocator;
+    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+
+    const module = try create(allocator);
+    defer module.hooks.stop_fn.?(module.context, runtime) catch {};
+
+    const state: *WsState = @ptrCast(@alignCast(module.context));
+
+    try command(module.context, runtime, .{
+        .name = "websocket.connect",
+        .payload = "not-a-url",
+    });
+    try std.testing.expect(!state.connected);
+    try std.testing.expect(state.last_host == null);
+    try std.testing.expect(state.last_path == null);
+    try std.testing.expectEqual(@as(u16, 0), state.last_port);
+    try std.testing.expect(!state.last_secure);
+}
+
+test "websocket: connect replaces previous URL without leaking" {
+    const allocator = std.testing.allocator;
+    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+
+    const module = try create(allocator);
+    defer module.hooks.stop_fn.?(module.context, runtime) catch {};
+
+    const state: *WsState = @ptrCast(@alignCast(module.context));
+
+    try command(module.context, runtime, .{
+        .name = "websocket.connect",
+        .payload = "ws://a.example.com:1111/path-a",
+    });
+    try command(module.context, runtime, .{
+        .name = "websocket.connect",
+        .payload = "ws://b.example.com:2222/path-b",
+    });
+
+    try std.testing.expectEqualStrings("b.example.com", state.last_host.?);
+    try std.testing.expectEqualStrings("/path-b", state.last_path.?);
+    try std.testing.expectEqual(@as(u16, 2222), state.last_port);
+    // std.testing.allocator fails the test if a slice leaked.
 }
 
 test "websocket: send records frame" {
@@ -568,7 +877,7 @@ test "websocket: close clears connected" {
 
     try command(module.context, runtime, .{
         .name = "websocket.connect",
-        .payload = "localhost:8080/ws",
+        .payload = "ws://localhost:8080/ws",
     });
     try std.testing.expect(state.connected);
 
@@ -598,7 +907,7 @@ test "websocket: registry integration" {
     try registry.startAll(runtime);
     try registry.dispatchCommand(runtime, .{
         .name = "websocket.connect",
-        .payload = "localhost:8080/ws",
+        .payload = "ws://localhost:8080/ws",
     });
     try registry.dispatchCommand(runtime, .{
         .name = "websocket.send",

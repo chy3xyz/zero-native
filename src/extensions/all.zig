@@ -17,4 +17,5 @@ test {
     _ = @import("plugin_updater.zig");
     _ = @import("plugin_global_shortcut.zig");
     _ = @import("plugin_websocket.zig");
+    _ = @import("http_client.zig");
 }
