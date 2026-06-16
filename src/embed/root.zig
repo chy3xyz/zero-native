@@ -139,3 +139,76 @@ test "embedded app starts and loads source" {
     try embedded.start();
     try @import("std").testing.expectEqualStrings("<p>Embedded</p>", null_platform.loaded_source.?.bytes);
 }
+
+test "EmbeddedApp.init stores the supplied app and runtime" {
+    var null_platform = platform.NullPlatform.init(.{});
+    var context: u8 = 0;
+    const app = runtime.App{
+        .context = &context,
+        .name = "init-test",
+        .source = platform.WebViewSource.html("hello"),
+    };
+    const embedded = EmbeddedApp.init(app, null_platform.platform());
+
+    try std.testing.expectEqualStrings("init-test", embedded.app.name);
+    try std.testing.expectEqualStrings("null", embedded.runtime.options.platform.name);
+}
+
+const EventCounters = struct {
+    start_count: usize = 0,
+    stop_count: usize = 0,
+    frame_count: usize = 0,
+};
+
+fn countingEvent(context: *anyopaque, rt: *runtime.Runtime, event_value: runtime.Event) anyerror!void {
+    _ = rt;
+    const self: *EventCounters = @ptrCast(@alignCast(context));
+    switch (event_value) {
+        .lifecycle => |lifecycle| switch (lifecycle) {
+            .start => self.start_count += 1,
+            .stop => self.stop_count += 1,
+            .frame => self.frame_count += 1,
+        },
+        .command => {},
+    }
+}
+
+test "EmbeddedApp start/stop/frame delegate to the embedded app and runtime" {
+    var null_platform = platform.NullPlatform.init(.{});
+    var counters: EventCounters = .{};
+    var embedded = EmbeddedApp.init(.{
+        .context = &counters,
+        .name = "delegate",
+        .source = platform.WebViewSource.html("<p>delegate</p>"),
+        .event_fn = countingEvent,
+    }, null_platform.platform());
+
+    try embedded.start();
+    try std.testing.expectEqual(@as(usize, 1), counters.start_count);
+
+    try embedded.frame();
+    try std.testing.expectEqual(@as(usize, 1), counters.frame_count);
+    try std.testing.expectEqual(@as(u64, 1), embedded.runtime.frame_index);
+
+    try embedded.stop();
+    try std.testing.expectEqual(@as(usize, 1), counters.stop_count);
+}
+
+fn failingStart(context: *anyopaque, rt: *runtime.Runtime) anyerror!void {
+    _ = context;
+    _ = rt;
+    return error.TestStartFailed;
+}
+
+test "EmbeddedApp.start propagates errors from the embedded app start callback" {
+    var null_platform = platform.NullPlatform.init(.{});
+    var context: u8 = 0;
+    var embedded = EmbeddedApp.init(.{
+        .context = &context,
+        .name = "error",
+        .source = platform.WebViewSource.html(""),
+        .start_fn = failingStart,
+    }, null_platform.platform());
+
+    try std.testing.expectError(error.TestStartFailed, embedded.start());
+}

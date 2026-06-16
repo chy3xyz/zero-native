@@ -136,7 +136,7 @@ fn httpReady(io: std.Io, stream: std.Io.net.Stream, host: []const u8, path: []co
 }
 
 fn sleepPollInterval(io: std.Io) void {
-    std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), .awake) catch {};
+    std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), .awake) catch {}; // best-effort: polling interval
 }
 
 test "parse dev server urls" {

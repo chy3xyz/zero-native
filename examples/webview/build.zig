@@ -48,6 +48,8 @@ pub fn build(b: *std.Build) void {
     if (selected_platform == .windows and target.result.os.tag != .windows) {
         @panic("-Dplatform=windows requires a Windows target");
     }
+    const sdk_path: ?[]const u8 = if (target.result.os.tag == .macos) macosSdkPath(b, &target.result) else null;
+    defer if (sdk_path) |path| b.allocator.free(path);
     const app_web_engine = appWebEngineConfig();
     const web_engine = web_engine_override orelse app_web_engine.web_engine;
     const cef_dir = cef_dir_override orelse defaultCefDir(selected_platform, app_web_engine.cef_dir);
@@ -83,7 +85,7 @@ pub fn build(b: *std.Build) void {
         .name = app_exe_name,
         .root_module = app_mod,
     });
-    linkPlatform(b, target, app_mod, exe, selected_platform, web_engine, zero_native_path, cef_dir, cef_auto_install);
+    linkPlatform(b, target, app_mod, exe, selected_platform, web_engine, zero_native_path, cef_dir, cef_auto_install, sdk_path);
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
@@ -100,32 +102,17 @@ fn zeroNativeTarget(b: *std.Build) std.Build.ResolvedTarget {
     const target = b.standardTargetOptions(.{});
     if (target.result.os.tag != .macos) return target;
 
-    if (b.sysroot == null) {
-        b.sysroot = macosSdkPath(b) orelse b.sysroot;
-    }
-
     var query = target.query;
     query.os_tag = .macos;
     query.os_version_min = .{ .semver = .{ .major = 11, .minor = 0, .patch = 0 } };
     return b.resolveTargetQuery(query);
 }
 
-fn macosSdkPath(b: *std.Build) ?[]const u8 {
+fn macosSdkPath(b: *std.Build, target: *const std.Target) ?[]const u8 {
     if (b.graph.environ_map.get("SDKROOT")) |sdkroot| {
         if (sdkroot.len > 0) return sdkroot;
     }
-
-    const result = std.process.run(b.allocator, b.graph.io, .{
-        .argv = &.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" },
-        .stdout_limit = .limited(4096),
-        .stderr_limit = .limited(4096),
-    }) catch return null;
-    defer b.allocator.free(result.stderr);
-    if (result.term != .exited or result.term.exited != 0) {
-        b.allocator.free(result.stdout);
-        return null;
-    }
-    return std.mem.trimEnd(u8, result.stdout, "\r\n");
+    return std.zig.system.darwin.getSdk(b.allocator, b.graph.io, target);
 }
 
 fn localModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, path: []const u8) *std.Build.Module {
@@ -173,12 +160,12 @@ fn externalModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
     });
 }
 
-fn linkPlatform(b: *std.Build, target: std.Build.ResolvedTarget, app_mod: *std.Build.Module, exe: *std.Build.Step.Compile, platform: PlatformOption, web_engine: WebEngineOption, zero_native_path: []const u8, cef_dir: []const u8, cef_auto_install: bool) void {
+fn linkPlatform(b: *std.Build, target: std.Build.ResolvedTarget, app_mod: *std.Build.Module, exe: *std.Build.Step.Compile, platform: PlatformOption, web_engine: WebEngineOption, zero_native_path: []const u8, cef_dir: []const u8, cef_auto_install: bool, sdk_path: ?[]const u8) void {
     if (platform == .macos) {
         switch (web_engine) {
             .system => {
-                const sdk_include = if (b.sysroot) |sysroot| b.fmt("-I{s}/usr/include", .{sysroot}) else "";
-                const flags: []const []const u8 = if (b.sysroot) |sysroot| &.{ "-fobjc-arc", "-ObjC", "-mmacosx-version-min=11.0", "-isysroot", sysroot, sdk_include } else &.{ "-fobjc-arc", "-ObjC", "-mmacosx-version-min=11.0" };
+                const sdk_include = if (sdk_path) |sdk| b.fmt("-I{s}/usr/include", .{sdk}) else "";
+                const flags: []const []const u8 = if (sdk_path) |sdk| &.{ "-fobjc-arc", "-ObjC", "-mmacosx-version-min=11.0", "-isysroot", sdk, sdk_include } else &.{ "-fobjc-arc", "-ObjC", "-mmacosx-version-min=11.0" };
                 app_mod.addCSourceFile(.{ .file = zeroNativePath(b, zero_native_path, "src/platform/macos/appkit_host.m"), .flags = flags });
                 app_mod.linkFramework("WebKit", .{});
             },
@@ -191,8 +178,8 @@ fn linkPlatform(b: *std.Build, target: std.Build.ResolvedTarget, app_mod: *std.B
                 exe.step.dependOn(&cef_check.step);
                 const include_arg = b.fmt("-I{s}", .{cef_dir});
                 const define_arg = b.fmt("-DZERO_NATIVE_CEF_DIR=\"{s}\"", .{cef_dir});
-                const sdk_include = if (b.sysroot) |sysroot| b.fmt("-I{s}/usr/include", .{sysroot}) else "";
-                const flags: []const []const u8 = if (b.sysroot) |sysroot| &.{ "-fobjc-arc", "-ObjC++", "-std=c++17", "-stdlib=libc++", "-mmacosx-version-min=11.0", "-isysroot", sysroot, sdk_include, include_arg, define_arg } else &.{ "-fobjc-arc", "-ObjC++", "-std=c++17", "-stdlib=libc++", "-mmacosx-version-min=11.0", include_arg, define_arg };
+                const sdk_include = if (sdk_path) |sdk| b.fmt("-I{s}/usr/include", .{sdk}) else "";
+                const flags: []const []const u8 = if (sdk_path) |sdk| &.{ "-fobjc-arc", "-ObjC++", "-std=c++17", "-stdlib=libc++", "-mmacosx-version-min=11.0", "-isysroot", sdk, sdk_include, include_arg, define_arg } else &.{ "-fobjc-arc", "-ObjC++", "-std=c++17", "-stdlib=libc++", "-mmacosx-version-min=11.0", include_arg, define_arg };
                 app_mod.addCSourceFile(.{ .file = zeroNativePath(b, zero_native_path, "src/platform/macos/cef_host.mm"), .flags = flags });
                 app_mod.addObjectFile(b.path(b.fmt("{s}/libcef_dll_wrapper/libcef_dll_wrapper.a", .{cef_dir})));
                 app_mod.addFrameworkPath(b.path(b.fmt("{s}/Release", .{cef_dir})));
@@ -200,8 +187,8 @@ fn linkPlatform(b: *std.Build, target: std.Build.ResolvedTarget, app_mod: *std.B
                 app_mod.addRPath(.{ .cwd_relative = "@executable_path/Frameworks" });
             },
         }
-        if (b.sysroot) |sysroot| {
-            app_mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }) });
+        if (sdk_path) |sdk| {
+            app_mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
         }
         app_mod.linkFramework("AppKit", .{});
         app_mod.linkFramework("Foundation", .{});

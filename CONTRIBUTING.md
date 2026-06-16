@@ -6,7 +6,7 @@ For app author documentation, start at [zero-native.dev](https://zero-native.dev
 
 ## Prerequisites
 
-- [Zig 0.16.0+](https://ziglang.org/download/)
+- [Zig 0.17.0+](https://ziglang.org/download/)
 - Node.js with npm for the CLI package and generated frontend projects
 - pnpm for the documentation site
 - macOS for WKWebView and Chromium/CEF development

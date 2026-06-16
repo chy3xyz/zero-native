@@ -359,7 +359,7 @@ fn installPrepared(allocator: std.mem.Allocator, io: std.Io, env_map: *std.proce
 
     const tmp_dir = try std.fs.path.join(allocator, &.{ cache_path, "extract-tmp" });
     defer allocator.free(tmp_dir);
-    runCommand(io, &.{ "rm", "-rf", tmp_dir }) catch {};
+    runCommand(io, &.{ "rm", "-rf", tmp_dir }) catch {}; // cleanup: best-effort
     const layout_dir = try std.fs.path.join(allocator, &.{ tmp_dir, "layout" });
     defer allocator.free(layout_dir);
     try std.Io.Dir.cwd().createDirPath(io, layout_dir);
@@ -410,7 +410,7 @@ fn installOfficial(allocator: std.mem.Allocator, io: std.Io, env_map: *std.proce
 
     const tmp_dir = try std.fs.path.join(allocator, &.{ cache_path, "extract-tmp" });
     defer allocator.free(tmp_dir);
-    runCommand(io, &.{ "rm", "-rf", tmp_dir }) catch {};
+    runCommand(io, &.{ "rm", "-rf", tmp_dir }) catch {}; // cleanup: best-effort
     try std.Io.Dir.cwd().createDirPath(io, tmp_dir);
     try runCommand(io, &.{ "tar", "-xjf", archive_path, "-C", tmp_dir });
 

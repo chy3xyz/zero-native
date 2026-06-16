@@ -14,8 +14,9 @@ pub const PackageTarget = enum {
     android,
 
     pub fn parse(value: []const u8) ?PackageTarget {
-        inline for (@typeInfo(PackageTarget).@"enum".fields) |field| {
-            if (std.mem.eql(u8, value, field.name)) return @enumFromInt(field.value);
+        const info = @typeInfo(PackageTarget).@"enum";
+        inline for (info.field_names, info.field_values) |field_name, field_value| {
+            if (std.mem.eql(u8, value, field_name)) return @enumFromInt(field_value);
         }
         return null;
     }
@@ -44,6 +45,23 @@ pub const SigningConfig = struct {
     team_id: ?[]const u8 = null,
 };
 
+/// Outcome of `runSigning`. The `plan` field is always owned by the caller
+/// and must be released with `deinit`.
+pub const SigningResult = struct {
+    /// Text written to `Contents/Resources/signing-plan.txt`. Owned.
+    plan: []u8,
+    /// Whether the bundle was actually signed successfully.
+    ok: bool,
+    /// The signing mode that was attempted.
+    mode: SigningMode,
+    /// The identity used when `mode == .identity`, otherwise null.
+    identity: ?[]const u8,
+
+    pub fn deinit(self: SigningResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.plan);
+    }
+};
+
 pub const PackageOptions = struct {
     metadata: manifest_tool.Metadata,
     target: PackageTarget = .macos,
@@ -56,6 +74,11 @@ pub const PackageOptions = struct {
     cef_dir: []const u8 = web_engine_tool.default_cef_dir,
     signing: SigningConfig = .{},
     archive: bool = false,
+    /// When true (the default), `runSigning` returns an error if codesign or
+    /// notarization fails. Set to false to keep the previous opt-in soft
+    /// failure mode where an unsigned bundle is produced with a plan file
+    /// describing the failure.
+    fail_on_signing_error: bool = true,
 };
 
 pub const PackageStats = struct {
@@ -154,7 +177,8 @@ pub fn createMacosApp(allocator: std.mem.Allocator, io: std.Io, options: Package
         try cef.ensureLayout(io, options.cef_dir);
         try copyMacosCefRuntime(allocator, io, package_dir, options.cef_dir);
     }
-    try runSigning(allocator, io, package_dir, options);
+    const signing_result = try runSigning(allocator, io, package_dir, options);
+    defer signing_result.deinit(allocator);
 
     return .{
         .path = options.output_path,
@@ -231,7 +255,9 @@ fn createDesktopArtifact(allocator: std.mem.Allocator, io: std.Io, options: Pack
         defer allocator.free(desktop_path);
         try writeFile(dir, io, desktop_path, desktop_entry);
         if (options.metadata.icons.len > 0) {
-            copyFileToDir(allocator, io, dir, options.metadata.icons[0], "share/icons/app-icon.png") catch {};
+            copyFileToDir(allocator, io, dir, options.metadata.icons[0], "share/icons/app-icon.png") catch |err| {
+                std.log.warn("package.linux_icon_copy_failed: icon={s} error={s}", .{ options.metadata.icons[0], @errorName(err) });
+            };
         }
     }
     if (options.web_engine == .chromium) {
@@ -642,9 +668,14 @@ fn copyMacosCefRuntime(allocator: std.mem.Allocator, io: std.Io, app_dir: std.Io
 
     const resources_src = try std.fs.path.join(allocator, &.{ cef_dir, "Resources" });
     defer allocator.free(resources_src);
-    copyTree(allocator, io, resources_src, app_dir, "Contents/Resources/cef") catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
+    copyTree(allocator, io, resources_src, app_dir, "Contents/Resources/cef") catch |err| {
+        switch (err) {
+            error.FileNotFound => std.log.warn("package.cef_resource_missing: src={s} error={s}", .{ resources_src, @errorName(err) }),
+            else => {
+                std.log.err("package.cef_resource_copy_failed: src={s} error={s}", .{ resources_src, @errorName(err) });
+                return err;
+            },
+        }
     };
 }
 
@@ -662,16 +693,26 @@ fn copyDesktopCefRuntime(allocator: std.mem.Allocator, io: std.Io, package_dir: 
 
     const resources_src = try std.fs.path.join(allocator, &.{ cef_dir, "Resources" });
     defer allocator.free(resources_src);
-    copyTree(allocator, io, resources_src, package_dir, "resources/cef") catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
+    copyTree(allocator, io, resources_src, package_dir, "resources/cef") catch |err| {
+        switch (err) {
+            error.FileNotFound => std.log.warn("package.cef_resource_missing: src={s} error={s}", .{ resources_src, @errorName(err) }),
+            else => {
+                std.log.err("package.cef_resource_copy_failed: src={s} error={s}", .{ resources_src, @errorName(err) });
+                return err;
+            },
+        }
     };
 
     const locales_src = try std.fs.path.join(allocator, &.{ cef_dir, "locales" });
     defer allocator.free(locales_src);
-    copyTree(allocator, io, locales_src, package_dir, "bin/locales") catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
+    copyTree(allocator, io, locales_src, package_dir, "bin/locales") catch |err| {
+        switch (err) {
+            error.FileNotFound => std.log.warn("package.cef_resource_missing: src={s} error={s}", .{ locales_src, @errorName(err) }),
+            else => {
+                std.log.err("package.cef_resource_copy_failed: src={s} error={s}", .{ locales_src, @errorName(err) });
+                return err;
+            },
+        }
     };
 }
 
@@ -712,34 +753,73 @@ fn copyTree(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, d
     }
 }
 
-fn runSigning(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, options: PackageOptions) !void {
-    switch (options.signing.mode) {
-        .none => try writeFile(dir, io, "Contents/Resources/signing-plan.txt", "signing=none\nunsigned local package\n"),
-        .adhoc => {
-            const result = codesign.signAdHoc(io, options.output_path) catch {
-                try writeFile(dir, io, "Contents/Resources/signing-plan.txt", "signing=adhoc\ncodesign --sign - failed; bundle is unsigned\n");
-                return;
-            };
-            const status = if (result.ok) "signing=adhoc\nad-hoc signed\n" else "signing=adhoc\ncodesign --sign - failed; bundle is unsigned\n";
-            try writeFile(dir, io, "Contents/Resources/signing-plan.txt", status);
-        },
-        .identity => {
-            const identity = options.signing.identity orelse {
-                try writeFile(dir, io, "Contents/Resources/signing-plan.txt", "signing=identity\nno identity provided; bundle is unsigned\n");
-                return;
-            };
-            const result = codesign.signIdentity(io, options.output_path, identity, options.signing.entitlements) catch {
-                try writeFile(dir, io, "Contents/Resources/signing-plan.txt", "signing=identity\ncodesign failed; bundle is unsigned\n");
-                return;
-            };
-            const status_text = if (result.ok)
-                try std.fmt.allocPrint(allocator, "signing=identity\nsigned with {s}\n", .{identity})
-            else
-                try allocator.dupe(u8, "signing=identity\ncodesign failed; bundle is unsigned\n");
-            defer allocator.free(status_text);
-            try writeFile(dir, io, "Contents/Resources/signing-plan.txt", status_text);
-        },
-    }
+fn runSigning(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, options: PackageOptions) !SigningResult {
+    const Plan = struct {
+        text: []u8,
+        ok: bool,
+    };
+    const plan_info: Plan = blk: {
+        switch (options.signing.mode) {
+            .none => break :blk .{
+                .text = try allocator.dupe(u8, "signing=none\nunsigned local package\n"),
+                .ok = false,
+            },
+            .adhoc => {
+                const result = codesign.signAdHoc(io, options.output_path) catch |err| {
+                    if (options.fail_on_signing_error) return err;
+                    std.log.warn("package.signing_failed: command=\"codesign --sign - {s}\" error={s}", .{ options.output_path, @errorName(err) });
+                    break :blk .{
+                        .text = try allocator.dupe(u8, "signing=adhoc\ncodesign --sign - failed; bundle is unsigned\n"),
+                        .ok = false,
+                    };
+                };
+                if (result.ok) break :blk .{
+                    .text = try allocator.dupe(u8, "signing=adhoc\nad-hoc signed\n"),
+                    .ok = true,
+                };
+                if (options.fail_on_signing_error) return error.SigningFailed;
+                break :blk .{
+                    .text = try allocator.dupe(u8, "signing=adhoc\ncodesign --sign - failed; bundle is unsigned\n"),
+                    .ok = false,
+                };
+            },
+            .identity => {
+                const identity = options.signing.identity orelse {
+                    if (options.fail_on_signing_error) return error.NoIdentity;
+                    break :blk .{
+                        .text = try allocator.dupe(u8, "signing=identity\nno identity provided; bundle is unsigned\n"),
+                        .ok = false,
+                    };
+                };
+                const result = codesign.signIdentity(io, options.output_path, identity, options.signing.entitlements) catch |err| {
+                    if (options.fail_on_signing_error) return err;
+                    std.log.warn("package.signing_failed: command=\"codesign --sign {s} {s}\" identity={s} error={s}", .{ identity, options.output_path, identity, @errorName(err) });
+                    break :blk .{
+                        .text = try allocator.dupe(u8, "signing=identity\ncodesign failed; bundle is unsigned\n"),
+                        .ok = false,
+                    };
+                };
+                if (result.ok) break :blk .{
+                    .text = try std.fmt.allocPrint(allocator, "signing=identity\nsigned with {s}\n", .{identity}),
+                    .ok = true,
+                };
+                if (options.fail_on_signing_error) return error.SigningFailed;
+                break :blk .{
+                    .text = try allocator.dupe(u8, "signing=identity\ncodesign failed; bundle is unsigned\n"),
+                    .ok = false,
+                };
+            },
+        }
+    };
+    errdefer allocator.free(plan_info.text);
+    try writeFile(dir, io, "Contents/Resources/signing-plan.txt", plan_info.text);
+
+    return .{
+        .plan = plan_info.text,
+        .ok = plan_info.ok,
+        .mode = options.signing.mode,
+        .identity = options.signing.identity,
+    };
 }
 
 fn linuxDesktopEntry(allocator: std.mem.Allocator, metadata: manifest_tool.Metadata) ![]const u8 {
@@ -759,31 +839,68 @@ fn linuxDesktopEntry(allocator: std.mem.Allocator, metadata: manifest_tool.Metad
     , .{ display_name, executable, display_name });
 }
 
+fn runArchiveCommand(io: std.Io, argv: []const []const u8, cwd: ?[]const u8) !void {
+    var child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+        .cwd = if (cwd) |c| .{ .path = c } else .inherit,
+    }) catch return error.ArchiveCommandFailed;
+    const term = child.wait(io) catch return error.ArchiveCommandFailed;
+    switch (term) {
+        .exited => |code| if (code == 0) return,
+        else => {},
+    }
+    return error.ArchiveCommandFailed;
+}
+
 fn createArchive(allocator: std.mem.Allocator, io: std.Io, options: PackageOptions) !?[]const u8 {
     const archive_path = try archivePath(allocator, options);
-    const cmd = switch (options.target) {
-        .macos => try std.fmt.allocPrint(allocator, "hdiutil create -volname \"{s}\" -srcfolder \"{s}\" -ov -format UDZO \"{s}\"", .{ options.metadata.displayName(), options.output_path, archive_path }),
-        .windows => try std.fmt.allocPrint(allocator, "cd \"{s}\" && zip -r \"{s}\" .", .{ options.output_path, archive_path }),
-        .linux => try std.fmt.allocPrint(allocator, "tar czf \"{s}\" -C \"{s}\" .", .{ archive_path, options.output_path }),
+
+    var argv: [10][]const u8 = undefined;
+    var argv_len: usize = 0;
+    var cwd: ?[]const u8 = null;
+
+    switch (options.target) {
+        .macos => {
+            argv[0] = "hdiutil";
+            argv[1] = "create";
+            argv[2] = "-volname";
+            argv[3] = options.metadata.displayName();
+            argv[4] = "-srcfolder";
+            argv[5] = options.output_path;
+            argv[6] = "-ov";
+            argv[7] = "-format";
+            argv[8] = "UDZO";
+            argv[9] = archive_path;
+            argv_len = 10;
+        },
+        .windows => {
+            argv[0] = "zip";
+            argv[1] = "-r";
+            argv[2] = archive_path;
+            argv[3] = ".";
+            argv_len = 4;
+            cwd = options.output_path;
+        },
+        .linux => {
+            argv[0] = "tar";
+            argv[1] = "czf";
+            argv[2] = archive_path;
+            argv[3] = "-C";
+            argv[4] = options.output_path;
+            argv[5] = ".";
+            argv_len = 6;
+        },
         .ios, .android => {
             allocator.free(archive_path);
             return null;
         },
-    };
-    defer allocator.free(cmd);
-    const argv = [_][]const u8{ "sh", "-c", cmd };
-    var child = std.process.spawn(io, .{
-        .argv = &argv,
-        .stdin = .ignore,
-        .stdout = .inherit,
-        .stderr = .inherit,
-    }) catch {
-        std.debug.print("warning: archive creation failed for {s}\n", .{archive_path});
-        allocator.free(archive_path);
-        return null;
-    };
-    _ = child.wait(io) catch {
-        std.debug.print("warning: archive creation failed for {s}\n", .{archive_path});
+    }
+
+    runArchiveCommand(io, argv[0..argv_len], cwd) catch |err| {
+        std.log.err("package.archive_failed: command={s} error={s}", .{ argv[0], @errorName(err) });
         allocator.free(archive_path);
         return null;
     };
@@ -857,7 +974,7 @@ test "copying files preserves executable permissions" {
     var cwd = std.Io.Dir.cwd();
     try cwd.deleteTree(std.testing.io, ".zig-cache/test-package-copy-mode");
     try cwd.createDirPath(std.testing.io, ".zig-cache/test-package-copy-mode/dest");
-    defer cwd.deleteTree(std.testing.io, ".zig-cache/test-package-copy-mode") catch {};
+    defer cwd.deleteTree(std.testing.io, ".zig-cache/test-package-copy-mode") catch {}; // best-effort cleanup
 
     const source_path = ".zig-cache/test-package-copy-mode/source-bin";
     var source = try cwd.createFile(std.testing.io, source_path, .{ .permissions = .executable_file });
@@ -880,7 +997,7 @@ test "macOS app executable is marked executable" {
     var cwd = std.Io.Dir.cwd();
     try cwd.deleteTree(std.testing.io, ".zig-cache/test-package-macos-mode");
     try cwd.createDirPath(std.testing.io, ".zig-cache/test-package-macos-mode/assets");
-    defer cwd.deleteTree(std.testing.io, ".zig-cache/test-package-macos-mode") catch {};
+    defer cwd.deleteTree(std.testing.io, ".zig-cache/test-package-macos-mode") catch {}; // best-effort cleanup
 
     const source_path = ".zig-cache/test-package-macos-mode/source-bin";
     try cwd.writeFile(std.testing.io, .{ .sub_path = source_path, .data = "test binary" });

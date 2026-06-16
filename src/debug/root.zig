@@ -69,7 +69,7 @@ pub const FileTraceSink = struct {
 
     fn write(context: *anyopaque, record: trace.Record) trace.WriteError!void {
         const self: *FileTraceSink = @ptrCast(@alignCast(context));
-        appendTraceRecord(self.io, self.log_dir, self.path, self.format, record) catch {};
+        appendTraceRecord(self.io, self.log_dir, self.path, self.format, record) catch {}; // best-effort: trace sink failures should not break propagation
     }
 };
 
@@ -113,11 +113,11 @@ pub fn resolveLogPaths(buffers: *LogPathBuffers, app_name: []const u8, env: app_
 }
 
 pub fn installPanicCapture(io: std.Io, paths: LogPaths) void {
-    panic_state.install(io, paths) catch {};
+    panic_state.install(io, paths) catch {}; // best-effort: panic capture setup failure is non-fatal
 }
 
 pub fn capturePanic(msg: []const u8, ra: ?usize) noreturn {
-    panic_state.write(msg, ra) catch {};
+    panic_state.write(msg, ra) catch {}; // best-effort: panic file write failure should not prevent default panic
     std.debug.defaultPanic(msg, ra);
 }
 
@@ -159,7 +159,7 @@ pub fn appendTraceRecord(io: std.Io, log_dir: []const u8, path: []const u8, form
 
 fn appendFile(io: std.Io, directory: []const u8, path: []const u8, bytes: []const u8) !void {
     var cwd = std.Io.Dir.cwd();
-    cwd.createDirPath(io, directory) catch {};
+    cwd.createDirPath(io, directory) catch {}; // best-effort: directory creation is verified by the following write
     var file = try cwd.createFile(io, path, .{ .read = true, .truncate = false });
     defer file.close(io);
     const stat = try file.stat(io);
@@ -198,7 +198,7 @@ const PanicState = struct {
         if (ra) |addr| try report.print("return_address: 0x{x}\n", .{addr});
 
         var cwd = std.Io.Dir.cwd();
-        cwd.createDirPath(self.io, self.log_dir) catch {};
+        cwd.createDirPath(self.io, self.log_dir) catch {}; // best-effort: directory creation is verified by the following write
         try cwd.writeFile(self.io, .{ .sub_path = self.panic_file, .data = report.buffered() });
 
         var fields: [1]trace.Field = undefined;
@@ -239,4 +239,88 @@ test "fanout sink writes every child sink" {
 
     try std.testing.expectEqual(@as(usize, 1), sink_a.written().len);
     try std.testing.expectEqual(@as(usize, 1), sink_b.written().len);
+}
+
+test "FileTraceSink writes a text trace record to a file" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    const log_dir = ".zig-cache/test-debug-file-sink";
+    const path = log_dir ++ "/trace.txt";
+    var cwd = std.Io.Dir.cwd();
+    cwd.deleteTree(io, log_dir) catch {}; // ensure a clean start
+    defer cwd.deleteTree(io, log_dir) catch {}; // best-effort cleanup
+
+    var file_sink = FileTraceSink.init(io, log_dir, path, .text);
+    const record = trace.event(
+        .{ .ns = 42 },
+        .info,
+        "test_event",
+        "hello world",
+        &[_]trace.Field{trace.string("key", "value")},
+    );
+    try file_sink.sink().write(record);
+
+    const content = try cwd.readFileAlloc(io, path, allocator, .limited(4096));
+    defer allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "test_event") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "hello world") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "key=\"value\"") != null);
+}
+
+test "FileTraceSink writes a JSON trace record to a file" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    const log_dir = ".zig-cache/test-debug-file-sink-json";
+    const path = log_dir ++ "/trace.jsonl";
+    var cwd = std.Io.Dir.cwd();
+    cwd.deleteTree(io, log_dir) catch {}; // ensure a clean start
+    defer cwd.deleteTree(io, log_dir) catch {}; // best-effort cleanup
+
+    var file_sink = FileTraceSink.init(io, log_dir, path, .json_lines);
+    const record = trace.event(.{ .ns = 7 }, .warn, "json_event", "alert", &.{});
+    try file_sink.sink().write(record);
+
+    const content = try cwd.readFileAlloc(io, path, allocator, .limited(4096));
+    defer allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"name\":\"json_event\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"message\":\"alert\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"level\":\"warn\"") != null);
+}
+
+test "FanoutTraceSink distributes records to multiple buffer sinks" {
+    var records_a: [2]trace.Record = undefined;
+    var records_b: [2]trace.Record = undefined;
+    var sink_a = trace.BufferSink.init(&records_a);
+    var sink_b = trace.BufferSink.init(&records_b);
+    const sinks = [_]trace.Sink{ sink_a.sink(), sink_b.sink() };
+    var fanout: FanoutTraceSink = .{ .sinks = &sinks };
+
+    try fanout.sink().write(trace.event(.{ .ns = 1 }, .info, "one", null, &.{}));
+    try fanout.sink().write(trace.event(.{ .ns = 2 }, .info, "two", null, &.{}));
+
+    try std.testing.expectEqual(@as(usize, 2), sink_a.written().len);
+    try std.testing.expectEqual(@as(usize, 2), sink_b.written().len);
+    try std.testing.expectEqualStrings("one", sink_a.written()[0].name);
+    try std.testing.expectEqualStrings("two", sink_b.written()[1].name);
+}
+
+test "appendTraceRecord creates the log directory if it does not exist" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    const log_dir = ".zig-cache/test-debug-append-record";
+    const path = log_dir ++ "/trace.jsonl";
+    var cwd = std.Io.Dir.cwd();
+    cwd.deleteTree(io, log_dir) catch {}; // ensure a clean start
+    defer cwd.deleteTree(io, log_dir) catch {}; // best-effort cleanup
+
+    const record = trace.event(.{ .ns = 9 }, .info, "missing_dir", "created", &.{});
+    try appendTraceRecord(io, log_dir, path, .json_lines, record);
+
+    const content = try cwd.readFileAlloc(io, path, allocator, .limited(4096));
+    defer allocator.free(content);
+
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"name\":\"missing_dir\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"message\":\"created\"") != null);
 }

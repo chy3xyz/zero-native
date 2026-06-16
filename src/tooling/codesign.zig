@@ -90,16 +90,24 @@ pub fn notarize(allocator: std.mem.Allocator, io: std.Io, args: NotarizeArgs) !S
 
     var zip_buf: [1024]u8 = undefined;
     const zip_cmd = try buildZipCommand(&zip_buf, args.app_path, zip_path);
-    var zip_result = runShell(io, zip_cmd) catch return .{ .ok = false, .message = "failed to zip app for notarization" };
-    _ = &zip_result;
+    runShell(io, zip_cmd) catch |err| {
+        std.log.err("codesign.notarize_zip_failed: error={s}", .{@errorName(err)});
+        return .{ .ok = false, .message = "failed to zip app for notarization" };
+    };
 
     var submit_buf: [1024]u8 = undefined;
     const submit_cmd = try buildNotarizeSubmitCommand(&submit_buf, zip_path, args);
-    runShell(io, submit_cmd) catch return .{ .ok = false, .message = "notarytool submit failed" };
+    runShell(io, submit_cmd) catch |err| {
+        std.log.err("codesign.notarize_submit_failed: error={s}", .{@errorName(err)});
+        return .{ .ok = false, .message = "notarytool submit failed" };
+    };
 
     var staple_buf: [512]u8 = undefined;
     const staple_cmd = try buildStapleCommand(&staple_buf, args.app_path);
-    runShell(io, staple_cmd) catch return .{ .ok = false, .message = "stapler staple failed" };
+    runShell(io, staple_cmd) catch |err| {
+        std.log.err("codesign.notarize_staple_failed: error={s}", .{@errorName(err)});
+        return .{ .ok = false, .message = "stapler staple failed" };
+    };
 
     return .{ .ok = true, .message = "notarization complete" };
 }
@@ -107,19 +115,122 @@ pub fn notarize(allocator: std.mem.Allocator, io: std.Io, args: NotarizeArgs) !S
 fn runSign(io: std.Io, args: CodesignArgs) !SignResult {
     var buffer: [1024]u8 = undefined;
     const cmd = try buildSignCommand(&buffer, args);
-    runShell(io, cmd) catch return .{ .ok = false, .message = "codesign failed" };
+    runShell(io, cmd) catch |err| {
+        std.log.err("codesign.sign_failed: error={s}", .{@errorName(err)});
+        return .{ .ok = false, .message = "codesign failed" };
+    };
     return .{ .ok = true, .message = "signed" };
 }
 
+/// Tokenize a shell-style command string into an argv array suitable for
+/// `std.process.spawn`. Handles POSIX-style quoting (single quotes preserve
+/// content literally, double quotes allow backslash escapes for `\`, `"`,
+/// `` ` ``, `$`, and newline, and a backslash outside quotes escapes the
+/// next character). Adjacent quoted and unquoted segments within a single
+/// word are concatenated. The returned slice and all contained slices are
+/// allocated by `allocator` and share its lifetime.
+fn parseShellCommand(allocator: std.mem.Allocator, cmd: []const u8) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (argv.items) |item| allocator.free(item);
+        argv.deinit(allocator);
+    }
+
+    var pos: usize = 0;
+    while (pos < cmd.len) {
+        // Skip inter-token whitespace.
+        while (pos < cmd.len and std.ascii.isWhitespace(cmd[pos])) : (pos += 1) {}
+        if (pos >= cmd.len) break;
+
+        var token: std.ArrayList(u8) = .empty;
+        errdefer token.deinit(allocator);
+        var in_single = false;
+        var in_double = false;
+
+        while (pos < cmd.len) {
+            const c = cmd[pos];
+            if (in_single) {
+                if (c == '\'') {
+                    in_single = false;
+                    pos += 1;
+                } else {
+                    try token.append(allocator, c);
+                    pos += 1;
+                }
+            } else if (in_double) {
+                if (c == '\\' and pos + 1 < cmd.len) {
+                    const next = cmd[pos + 1];
+                    if (next == '\\' or next == '"' or next == '`' or next == '$' or next == '\n') {
+                        try token.append(allocator, next);
+                        pos += 2;
+                    } else {
+                        try token.append(allocator, c);
+                        pos += 1;
+                    }
+                } else if (c == '"') {
+                    in_double = false;
+                    pos += 1;
+                } else {
+                    try token.append(allocator, c);
+                    pos += 1;
+                }
+            } else if (std.ascii.isWhitespace(c)) {
+                break;
+            } else if (c == '\'') {
+                in_single = true;
+                pos += 1;
+            } else if (c == '"') {
+                in_double = true;
+                pos += 1;
+            } else if (c == '\\' and pos + 1 < cmd.len) {
+                try token.append(allocator, cmd[pos + 1]);
+                pos += 2;
+            } else {
+                try token.append(allocator, c);
+                pos += 1;
+            }
+        }
+        // Reject unterminated quotes rather than silently running with a
+        // truncated argument.
+        if (in_single or in_double) return error.UnterminatedQuote;
+
+        const owned = try token.toOwnedSlice(allocator);
+        try argv.append(allocator, owned);
+    }
+
+    if (argv.items.len == 0) return error.EmptyCommand;
+    return argv.items;
+}
+
 fn runShell(io: std.Io, cmd: []const u8) !void {
-    const argv = [_][]const u8{ "sh", "-c", cmd };
-    var child = try std.process.spawn(io, .{
-        .argv = &argv,
+    // Tokenize the command into an argv array and spawn the target process
+    // directly. We deliberately do NOT route through `sh -c`: the previous
+    // implementation concatenated caller-supplied paths into a single shell
+    // string, which allowed shell command injection from any input
+    // (for example, a malicious `app_path` containing `; rm -rf ~`). With
+    // argv-based spawn every argument is passed verbatim to the target
+    // program and shell metacharacters lose their special meaning.
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena.deinit();
+    const argv = parseShellCommand(arena.allocator(), cmd) catch |err| {
+        std.log.err("codesign.run_shell.parse_failed: command=\"{s}\" error={s}", .{ cmd, @errorName(err) });
+        return err;
+    };
+    const argv_text = std.mem.join(arena.allocator(), " ", argv) catch cmd;
+
+    var child = std.process.spawn(io, .{
+        .argv = argv,
         .stdin = .ignore,
         .stdout = .inherit,
         .stderr = .inherit,
-    });
-    _ = try child.wait(io);
+    }) catch |err| {
+        std.log.err("codesign.run_shell.spawn_failed: argv={s} error={s}", .{ argv_text, @errorName(err) });
+        return err;
+    };
+    _ = child.wait(io) catch |err| {
+        std.log.err("codesign.run_shell.wait_failed: argv={s} error={s}", .{ argv_text, @errorName(err) });
+        return err;
+    };
 }
 
 test "ad-hoc sign command is well-formed" {

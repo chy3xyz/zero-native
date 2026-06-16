@@ -9,112 +9,76 @@ const platform = @import("../platform/root.zig");
 const security = @import("../security/root.zig");
 const window_state = @import("../window_state/root.zig");
 
+const event_mod = @import("event.zig");
+const app_mod = @import("app.zig");
+const options_mod = @import("options.zig");
+
 const max_async_bridge_responses: usize = 64;
 const max_bridge_origin_bytes: usize = 512;
 
-pub const LifecycleEvent = enum {
-    start,
-    frame,
-    stop,
-};
+pub const LifecycleEvent = event_mod.LifecycleEvent;
+pub const CommandEvent = event_mod.CommandEvent;
+pub const InvalidationReason = event_mod.InvalidationReason;
+pub const FrameDiagnostics = event_mod.FrameDiagnostics;
+pub const Event = event_mod.Event;
+pub const App = app_mod.App;
+pub const Options = options_mod.Options;
 
-pub const CommandEvent = struct {
-    name: []const u8,
-};
+/// Many functions in this file return `anyerror!T` because they propagate errors
+/// from two intentionally unconstrained sources: app-provided callbacks (see
+/// `app.zig`) and platform backend services, which may raise backend-specific
+/// failures. Functions that are themselves callback signatures document that
+/// fact individually.
 
-pub const InvalidationReason = enum {
-    startup,
-    surface_resize,
-    command,
-    state,
-};
-
-pub const FrameDiagnostics = struct {
-    frame_index: u64 = 0,
-    command_count: usize = 0,
-    dirty_region_count: usize = 0,
-    resource_upload_count: usize = 0,
-    duration_ns: u64 = 0,
-};
-
-pub const Event = union(enum) {
-    lifecycle: LifecycleEvent,
-    command: CommandEvent,
-
-    pub fn name(self: Event) []const u8 {
-        return switch (self) {
-            .lifecycle => |event_value| @tagName(event_value),
-            .command => |event_value| event_value.name,
-        };
-    }
-};
-
-const StartFn = *const fn (context: *anyopaque, runtime: *Runtime) anyerror!void;
-const EventFn = *const fn (context: *anyopaque, runtime: *Runtime, event: Event) anyerror!void;
-const SourceFn = *const fn (context: *anyopaque) anyerror!platform.WebViewSource;
-const StopFn = *const fn (context: *anyopaque, runtime: *Runtime) anyerror!void;
-
-pub const App = struct {
-    context: *anyopaque,
-    name: []const u8,
-    source: platform.WebViewSource,
-    source_fn: ?SourceFn = null,
-    start_fn: ?StartFn = null,
-    event_fn: ?EventFn = null,
-    stop_fn: ?StopFn = null,
-
-    pub fn start(self: App, runtime: *Runtime) anyerror!void {
-        if (self.start_fn) |start_fn| try start_fn(self.context, runtime);
-    }
-
-    pub fn event(self: App, runtime: *Runtime, event_value: Event) anyerror!void {
-        if (self.event_fn) |event_fn| try event_fn(self.context, runtime, event_value);
-    }
-
-    pub fn webViewSource(self: App) anyerror!platform.WebViewSource {
-        if (self.source_fn) |source_fn| return source_fn(self.context);
-        return self.source;
-    }
-
-    pub fn stop(self: App, runtime: *Runtime) anyerror!void {
-        if (self.stop_fn) |stop_fn| try stop_fn(self.context, runtime);
-    }
-};
-
-pub const Options = struct {
-    platform: platform.Platform,
-    trace_sink: ?trace.Sink = null,
-    log_path: ?[]const u8 = null,
-    extensions: ?extensions.ModuleRegistry = null,
-    bridge: ?bridge.Dispatcher = null,
-    builtin_bridge: bridge.Policy = .{},
-    security: security.Policy = .{},
-    automation: ?automation.Server = null,
-    window_state_store: ?window_state.Store = null,
-    js_window_api: bool = false,
-};
-
+/// Runtime instance that drives a single zero-native app.
+///
+/// INTERNAL: not thread-safe — every field is owned by the thread that called
+/// `Runtime.init` and must not be read or written from any other thread.
+/// Access from a foreign thread is undefined behavior.
 pub const Runtime = struct {
-    options: Options,
+    /// Options the runtime was initialized with. INTERNAL: not thread-safe.
+    options: options_mod.Options,
+    /// Latest host surface geometry. INTERNAL: not thread-safe.
     surface: platform.Surface,
+    /// Window records indexed by allocation order. INTERNAL: not thread-safe.
     windows: [platform.max_windows]RuntimeWindow = undefined,
+    /// Number of populated entries in `windows`. INTERNAL: not thread-safe.
     window_count: usize = 0,
+    /// WebView records indexed by allocation order. INTERNAL: not thread-safe.
     webviews: [platform.max_webviews]RuntimeWebView = undefined,
+    /// Number of populated entries in `webviews`. INTERNAL: not thread-safe.
     webview_count: usize = 0,
+    /// Next window id to hand out on demand. INTERNAL: not thread-safe.
     next_window_id: platform.WindowId = 2,
+    /// True when the next frame should repaint. INTERNAL: not thread-safe.
     invalidated: bool = true,
+    /// Timestamp of the current frame, in nanoseconds. INTERNAL: not thread-safe.
     timestamp_ns: i128 = 0,
+    /// Monotonic frame counter incremented on every published frame.
+    /// INTERNAL: not thread-safe.
     frame_index: u64 = 0,
+    /// Bridge commands handled in the current frame. INTERNAL: not thread-safe.
     command_count: usize = 0,
+    /// Pending dirty regions accumulated since the last frame.
+    /// INTERNAL: not thread-safe.
     dirty_regions: [8]geometry.RectF = undefined,
+    /// Number of populated entries in `dirty_regions`. INTERNAL: not thread-safe.
     dirty_region_count: usize = 0,
-    last_invalidation_reason: InvalidationReason = .startup,
-    last_diagnostics: FrameDiagnostics = .{},
+    /// Reason the last frame was invalidated. INTERNAL: not thread-safe.
+    last_invalidation_reason: event_mod.InvalidationReason = .startup,
+    /// Diagnostics snapshot for the last published frame. INTERNAL: not thread-safe.
+    last_diagnostics: event_mod.FrameDiagnostics = .{},
+    /// Source most recently loaded into a webview. INTERNAL: not thread-safe.
     loaded_source: ?platform.WebViewSource = null,
-    async_bridge_responses: [max_async_bridge_responses]AsyncBridgeResponseSlot = [_]AsyncBridgeResponseSlot{.{}} ** max_async_bridge_responses,
+    /// Pool of slots used to track in-flight async bridge responses.
+    /// INTERNAL: not thread-safe except for `AsyncBridgeResponseSlot.in_use`,
+    /// which is an atomic claim flag.
+    async_bridge_responses: [max_async_bridge_responses]AsyncBridgeResponseSlot = @splat(.{}),
+    /// Scratch buffer used to publish automation snapshots. INTERNAL: not thread-safe.
     automation_windows: [automation.snapshot.max_windows]automation.snapshot.Window = undefined,
 
-    pub fn init(options: Options) Runtime {
+    /// Creates a runtime backed by the supplied options and platform surface.
+    pub fn init(options: options_mod.Options) Runtime {
         var runtime = Runtime{
             .options = options,
             .surface = options.platform.surface(),
@@ -123,11 +87,13 @@ pub const Runtime = struct {
         return runtime;
     }
 
+    /// Marks the runtime as needing a repaint for the generic `state` reason.
     pub fn invalidate(self: *Runtime) void {
         self.invalidateFor(.state, null);
     }
 
-    pub fn invalidateFor(self: *Runtime, reason: InvalidationReason, dirty_region: ?geometry.RectF) void {
+    /// Marks the runtime as needing a repaint for `reason`, optionally adding a dirty region.
+    pub fn invalidateFor(self: *Runtime, reason: event_mod.InvalidationReason, dirty_region: ?geometry.RectF) void {
         self.invalidated = true;
         self.last_invalidation_reason = reason;
         if (dirty_region) |region| {
@@ -138,7 +104,10 @@ pub const Runtime = struct {
         }
     }
 
-    pub fn run(self: *Runtime, app: App) anyerror!void {
+    /// Runs the app until shutdown, logging initialization and configuring security.
+    /// Return type is `anyerror!void` because app callbacks and platform backend
+    /// services may raise arbitrary errors.
+    pub fn run(self: *Runtime, app: app_mod.App) anyerror!void {
         var init_fields: [3]trace.Field = undefined;
         init_fields[0] = trace.string("app", app.name);
         init_fields[1] = trace.string("platform", self.options.platform.name);
@@ -156,6 +125,9 @@ pub const Runtime = struct {
         try self.log("runtime.done", "runtime finished", &.{});
     }
 
+    /// Creates a new window from `options`, returning its metadata.
+    /// Return type is `anyerror!platform.WindowInfo` because platform backend
+    /// services may raise arbitrary errors.
     pub fn createWindow(self: *Runtime, options: platform.WindowCreateOptions) anyerror!platform.WindowInfo {
         const source = options.source orelse self.loaded_source orelse return error.MissingWindowSource;
         const id = if (options.id != 0) options.id else self.allocateWindowId();
@@ -165,7 +137,7 @@ pub const Runtime = struct {
         const index = try self.reserveWindow(id, label, options.title, source);
         var native_created = false;
         errdefer self.removeWindowAt(index);
-        errdefer if (native_created) self.options.platform.services.closeWindow(id) catch {};
+        errdefer if (native_created) self.options.platform.services.closeWindow(id) catch {}; // cleanup: best-effort
 
         const window_options = options.windowOptions(id, self.windows[index].info.label);
         const native_info = try self.options.platform.services.createWindow(window_options);
@@ -176,6 +148,7 @@ pub const Runtime = struct {
         return self.windows[index].info;
     }
 
+    /// Copies up to `output.len` window records into `output` and returns the slice that was written.
     pub fn listWindows(self: *const Runtime, output: []platform.WindowInfo) []const platform.WindowInfo {
         const count = @min(output.len, self.window_count);
         for (self.windows[0..count], 0..) |window, index| {
@@ -184,6 +157,9 @@ pub const Runtime = struct {
         return output[0..count];
     }
 
+    /// Focuses the window identified by `window_id`.
+    /// Return type is `anyerror!void` because platform backend services may raise
+    /// arbitrary errors.
     pub fn focusWindow(self: *Runtime, window_id: platform.WindowId) anyerror!void {
         const index = self.findWindowIndexById(window_id) orelse return error.WindowNotFound;
         try self.options.platform.services.focusWindow(window_id);
@@ -191,6 +167,9 @@ pub const Runtime = struct {
         self.invalidated = true;
     }
 
+    /// Closes the window identified by `window_id` and its webviews.
+    /// Return type is `anyerror!void` because platform backend services may raise
+    /// arbitrary errors.
     pub fn closeWindow(self: *Runtime, window_id: platform.WindowId) anyerror!void {
         const index = self.findWindowIndexById(window_id) orelse return error.WindowNotFound;
         try self.options.platform.services.closeWindow(window_id);
@@ -200,16 +179,25 @@ pub const Runtime = struct {
         self.invalidated = true;
     }
 
+    /// Emits a custom window event named `name` with JSON payload `detail_json`.
+    /// Return type is `anyerror!void` because platform backend services may raise
+    /// arbitrary errors.
     pub fn emitWindowEvent(self: *Runtime, window_id: platform.WindowId, name: []const u8, detail_json: []const u8) anyerror!void {
         if (!json.isValidValue(detail_json)) return error.InvalidJsonEventDetail;
         try self.options.platform.services.emitWindowEvent(window_id, name, detail_json);
     }
 
+    /// Completes a bridge response from an async handler for the given `source`.
+    /// Return type is `anyerror!void` because platform backend services may raise
+    /// arbitrary errors.
     pub fn respondToBridge(self: *Runtime, source: bridge.Source, response: []const u8) anyerror!void {
         try self.completeBridgeResponse(source.window_id, source.webview_label, response);
     }
 
-    pub fn dispatchPlatformEvent(self: *Runtime, app: App, event_value: platform.Event) anyerror!void {
+    /// Dispatches a platform event into the runtime state machine.
+    /// Return type is `anyerror!void` because app callbacks and platform backend
+    /// services may raise arbitrary errors.
+    pub fn dispatchPlatformEvent(self: *Runtime, app: app_mod.App, event_value: platform.Event) anyerror!void {
         if (event_value != .frame_requested or self.invalidated) {
             const event_fields = [_]trace.Field{trace.string("event", event_value.name())};
             try self.log("platform.event", null, &event_fields);
@@ -279,7 +267,10 @@ pub const Runtime = struct {
         }
     }
 
-    pub fn dispatchEvent(self: *Runtime, app: App, event_value: Event) anyerror!void {
+    /// Dispatches a runtime `event_value` to the app and extensions.
+    /// Return type is `anyerror!void` because app callbacks and extension hooks
+    /// may raise arbitrary errors.
+    pub fn dispatchEvent(self: *Runtime, app: app_mod.App, event_value: event_mod.Event) anyerror!void {
         const event_fields = [_]trace.Field{trace.string("event", event_value.name())};
         try self.log("runtime.event", null, &event_fields);
         try app.event(self, event_value);
@@ -295,7 +286,10 @@ pub const Runtime = struct {
         }
     }
 
-    pub fn frame(self: *Runtime, app: App) anyerror!void {
+    /// Publishes one frame if invalidated, updating diagnostics and resetting state.
+    /// Return type is `anyerror!void` because app callbacks and automation
+    /// services may raise arbitrary errors.
+    pub fn frame(self: *Runtime, app: app_mod.App) anyerror!void {
         const start_ns = nowNanoseconds();
         try self.consumeAutomationCommand(app);
         if (!self.invalidated) return;
@@ -319,6 +313,7 @@ pub const Runtime = struct {
         try app.event(self, .{ .lifecycle = .frame });
     }
 
+    /// Builds an automation snapshot of windows and diagnostics using `title` as fallback.
     pub fn automationSnapshot(self: *Runtime, title: []const u8) automation.snapshot.Input {
         const count = @min(self.window_count, self.automation_windows.len);
         if (count == 0) {
@@ -344,16 +339,22 @@ pub const Runtime = struct {
         };
     }
 
-    pub fn frameDiagnostics(self: *Runtime) FrameDiagnostics {
+    /// Returns diagnostics for the last published frame.
+    pub fn frameDiagnostics(self: *Runtime) event_mod.FrameDiagnostics {
         return self.last_diagnostics;
     }
 
+    /// Platform `EventHandler` callback. Signature uses `anyerror` because the
+    /// runtime dispatches app callbacks that may raise arbitrary errors.
     fn handlePlatformEvent(context: *anyopaque, event_value: platform.Event) anyerror!void {
         const run_context: *RunContext = @ptrCast(@alignCast(context));
         try run_context.runtime.dispatchPlatformEvent(run_context.app, event_value);
     }
 
-    fn loadStartupWindows(self: *Runtime, app: App) anyerror!void {
+    /// Loads the startup windows declared by the app. Return type is `anyerror!void`
+    /// because `app.webViewSource()` and platform backend services may raise arbitrary
+    /// errors.
+    fn loadStartupWindows(self: *Runtime, app: app_mod.App) anyerror!void {
         const source = try app.webViewSource();
         self.loaded_source = source;
         const app_info = self.options.platform.app_info;
@@ -378,13 +379,19 @@ pub const Runtime = struct {
         });
     }
 
-    fn loadWebView(self: *Runtime, app: App) anyerror!void {
+    /// Loads the app's webview source into the main window. Return type is
+    /// `anyerror!void` because `app.webViewSource()` and platform backend services
+    /// may raise arbitrary errors.
+    fn loadWebView(self: *Runtime, app: app_mod.App) anyerror!void {
         const source = try app.webViewSource();
         self.loaded_source = source;
         try self.options.platform.services.loadWindowWebView(1, source);
     }
 
-    fn reloadWindows(self: *Runtime, app: App) anyerror!void {
+    /// Reloads the webview source for all open windows. Return type is
+    /// `anyerror!void` because `app.webViewSource()` and platform backend services
+    /// may raise arbitrary errors.
+    fn reloadWindows(self: *Runtime, app: app_mod.App) anyerror!void {
         const source = try app.webViewSource();
         self.loaded_source = source;
         if (self.window_count == 0) {
@@ -397,6 +404,9 @@ pub const Runtime = struct {
         }
     }
 
+    /// Dispatches a platform bridge message through async, builtin, and sync
+    /// handlers. Return type is `anyerror!void` because handlers and platform
+    /// backend services may raise arbitrary errors.
     fn handleBridgeMessage(self: *Runtime, message: platform.BridgeMessage) anyerror!void {
         self.command_count += 1;
         if (try self.handleBuiltinBridgeMessage(message)) return;
@@ -407,6 +417,24 @@ pub const Runtime = struct {
             self.invalidateFor(.command, null);
             return;
         }
+
+        // Sync bridge dispatch path: log parse failures and policy denials
+        // before delegating to the generic dispatcher.
+        if (bridge.parseRequest(message.bytes)) |request| {
+            if (!dispatcher.policy.allows(request.command, message.origin)) {
+                self.log("bridge.command_denied", "sync bridge command denied by policy", &.{
+                    trace.string("command", request.command),
+                    trace.string("origin", message.origin),
+                }) catch {}; // trace write failures are best-effort
+            }
+        } else |err| {
+            const preview_len = @min(message.bytes.len, 128);
+            self.log("bridge.parse_failed", "failed to parse sync bridge request", &.{
+                trace.string("error", @errorName(err)),
+                trace.string("bytes", message.bytes[0..preview_len]),
+            }) catch {}; // trace write failures are best-effort
+        }
+
         const response = dispatcher.dispatch(message.bytes, .{ .origin = message.origin, .window_id = message.window_id, .webview_label = message.webview_label }, &response_buffer);
         try self.completeBridgeResponse(message.window_id, message.webview_label, response);
         self.invalidateFor(.command, null);
@@ -416,10 +444,24 @@ pub const Runtime = struct {
         });
     }
 
+    /// Dispatches a bridge message to a registered async handler. Return type is
+    /// `anyerror!bool` because async handler callbacks and platform backend services
+    /// may raise arbitrary errors.
     fn handleAsyncBridgeMessage(self: *Runtime, dispatcher: bridge.Dispatcher, message: platform.BridgeMessage) anyerror!bool {
-        const request = bridge.parseRequest(message.bytes) catch return false;
+        const request = bridge.parseRequest(message.bytes) catch |err| {
+            const preview_len = @min(message.bytes.len, 128);
+            self.log("bridge.parse_failed", "failed to parse bridge request", &.{
+                trace.string("error", @errorName(err)),
+                trace.string("bytes", message.bytes[0..preview_len]),
+            }) catch {}; // trace write failures are best-effort
+            return false;
+        };
         const handler = dispatcher.async_registry.find(request.command) orelse return false;
         if (!dispatcher.policy.allows(request.command, message.origin)) {
+            self.log("bridge.command_denied", "bridge command denied by policy", &.{
+                trace.string("command", request.command),
+                trace.string("origin", message.origin),
+            }) catch {}; // trace write failures are best-effort
             var response_buffer: [bridge.max_response_bytes]u8 = undefined;
             const response = bridge.writeErrorResponse(&response_buffer, request.id, .permission_denied, "Bridge command is not permitted");
             try self.completeBridgeResponse(message.window_id, message.webview_label, response);
@@ -430,23 +472,35 @@ pub const Runtime = struct {
             .window_id = message.window_id,
             .webview_label = message.webview_label,
         }) catch |err| {
+            self.log("bridge.async_slot_exhausted", "async bridge response slots exhausted", &.{
+                trace.string("error", @errorName(err)),
+            }) catch {}; // trace write failures are best-effort
             var response_buffer: [bridge.max_response_bytes]u8 = undefined;
             const response = bridge.writeErrorResponse(&response_buffer, request.id, .internal_error, @errorName(err));
             try self.completeBridgeResponse(message.window_id, message.webview_label, response);
             return true;
         };
         errdefer source_slot.release();
-        try handler.invoke_fn(handler.context, .{
+        handler.invoke_fn(handler.context, .{
             .request = request,
             .source = source_slot.source,
         }, .{
             .context = source_slot,
             .source = source_slot.source,
             .respond_fn = asyncBridgeRespond,
-        });
+        }) catch |err| {
+            self.log("bridge.async_handler_failed", "async bridge handler failed", &.{
+                trace.string("command", request.command),
+                trace.string("error", @errorName(err)),
+            }) catch {}; // trace write failures are best-effort
+            return err;
+        };
         return true;
     }
 
+    /// Async bridge responder callback. Signature uses `anyerror` because it is
+    /// stored in a `bridge.AsyncResponder` and must match the expected callback
+    /// type, which allows arbitrary errors from the eventual platform response.
     fn asyncBridgeRespond(context: *anyopaque, source: bridge.Source, response: []const u8) anyerror!void {
         _ = source;
         const slot: *AsyncBridgeResponseSlot = @ptrCast(@alignCast(context));
@@ -455,19 +509,28 @@ pub const Runtime = struct {
 
     fn reserveAsyncBridgeResponse(self: *Runtime, source: bridge.Source) !*AsyncBridgeResponseSlot {
         for (&self.async_bridge_responses) |*slot| {
-            if (slot.in_use) continue;
+            // Atomically claim the slot: only the thread that successfully
+            // swaps `false` -> `true` wins. The other racing callbacks see
+            // the previous `true` value and continue searching.
+            if (slot.in_use.cmpxchgStrong(false, true, .acq_rel, .acquire) != null) continue;
+            // We won the race. Populate the rest of the slot; if `init`
+            // fails, give the claim back so another callback can use it.
+            errdefer slot.in_use.store(false, .release);
             try slot.init(self, source);
             return slot;
         }
         return error.AsyncBridgeResponseLimitReached;
     }
 
-    fn publishAutomation(self: *Runtime) anyerror!void {
+    fn publishAutomation(self: *Runtime) !void {
         const server = self.options.automation orelse return;
         try server.publish(self.automationSnapshot(server.title));
     }
 
-    fn consumeAutomationCommand(self: *Runtime, app: App) anyerror!void {
+    /// Consumes the next automation command, if any. Return type is `anyerror!void`
+    /// because commands may reload windows or dispatch bridge messages, both of which
+    /// may raise arbitrary errors.
+    fn consumeAutomationCommand(self: *Runtime, app: app_mod.App) anyerror!void {
         const server = self.options.automation orelse return;
         var buffer: [automation.protocol.max_command_bytes]u8 = undefined;
         const command = try server.takeCommand(&buffer) orelse return;
@@ -580,8 +643,18 @@ pub const Runtime = struct {
         return id;
     }
 
+    /// Handles built-in window, webview, and dialog bridge commands. Return type is
+    /// `anyerror!bool` because the response path uses platform backend services that
+    /// may raise arbitrary errors.
     fn handleBuiltinBridgeMessage(self: *Runtime, message: platform.BridgeMessage) anyerror!bool {
-        const request = bridge.parseRequest(message.bytes) catch return false;
+        const request = bridge.parseRequest(message.bytes) catch |err| {
+            const preview_len = @min(message.bytes.len, 128);
+            self.log("bridge.parse_failed", "failed to parse builtin bridge request", &.{
+                trace.string("error", @errorName(err)),
+                trace.string("bytes", message.bytes[0..preview_len]),
+            }) catch {}; // trace write failures are best-effort
+            return false;
+        };
         const is_window = std.mem.startsWith(u8, request.command, "zero-native.window.");
         const is_webview = std.mem.startsWith(u8, request.command, "zero-native.webview.");
         const is_dialog = std.mem.startsWith(u8, request.command, "zero-native.dialog.");
@@ -613,6 +686,9 @@ pub const Runtime = struct {
         return true;
     }
 
+    /// Sends a bridge response to the platform and automation observers. Return
+    /// type is `anyerror!void` because platform backend services may raise arbitrary
+    /// errors.
     fn completeBridgeResponse(self: *Runtime, window_id: platform.WindowId, webview_label: []const u8, response: []const u8) anyerror!void {
         try self.options.platform.services.completeWebViewBridge(window_id, webview_label, response);
         if (self.options.automation) |server| {
@@ -623,9 +699,24 @@ pub const Runtime = struct {
     fn allowsBuiltinBridgeCommand(self: *Runtime, command: []const u8, origin: []const u8, uses_window_permission: bool) bool {
         var policy = self.options.builtin_bridge;
         if (self.options.security.permissions.len > 0) policy.permissions = self.options.security.permissions;
-        if (policy.enabled) return policy.allows(command, origin);
+        if (policy.enabled) {
+            if (!policy.allows(command, origin)) {
+                self.log("bridge.command_denied", "builtin bridge command denied by policy", &.{
+                    trace.string("command", command),
+                    trace.string("origin", origin),
+                }) catch {}; // trace write failures are best-effort
+                return false;
+            }
+            return true;
+        }
         if (!uses_window_permission or !self.options.js_window_api) return false;
-        if (!security.allowsOrigin(self.options.security.navigation.allowed_origins, origin)) return false;
+        if (!security.allowsOrigin(self.options.security.navigation.allowed_origins, origin)) {
+            self.log("security.navigation_denied", "builtin bridge origin denied", &.{
+                trace.string("origin", origin),
+                trace.string("command", command),
+            }) catch {}; // trace write failures are best-effort
+            return false;
+        }
         if (self.options.security.permissions.len == 0) return true;
         return security.hasPermission(self.options.security.permissions, security.permission_window);
     }
@@ -814,7 +905,13 @@ pub const Runtime = struct {
             if (reserved) {
                 if (self.findWebViewIndex(window_id, label)) |index| self.removeWebViewAt(index);
             }
-            self.options.platform.services.closeWebView(window_id, label) catch {};
+            self.options.platform.services.closeWebView(window_id, label) catch |err| {
+                self.log("webview.close_failed", "failed to close webview during creation rollback", &.{
+                    trace.uint("window_id", window_id),
+                    trace.string("label", label),
+                    trace.string("error", @errorName(err)),
+                }) catch {}; // trace write failures are best-effort
+            };
         }
         try self.reserveWebView(window_id, label, url, webview_frame, layer, transparent, bridge_enabled);
         reserved = true;
@@ -927,7 +1024,13 @@ pub const Runtime = struct {
         if (url.len > platform.max_webview_url_bytes) return error.WebViewUrlTooLarge;
         var origin_buffer: [512]u8 = undefined;
         const origin = try webViewUrlOrigin(url, &origin_buffer);
-        if (!security.allowsOrigin(self.options.security.navigation.allowed_origins, origin)) return error.NavigationDenied;
+        if (!security.allowsOrigin(self.options.security.navigation.allowed_origins, origin)) {
+            self.log("security.navigation_denied", "navigation denied by policy", &.{
+                trace.string("origin", origin),
+                trace.string("url", url),
+            }) catch {}; // trace write failures are best-effort
+            return error.NavigationDenied;
+        }
     }
 
     fn writeWebViewListJson(self: *Runtime, source_window_id: platform.WindowId, output: []u8) ![]const u8 {
@@ -1086,7 +1189,7 @@ fn nowNanoseconds() i128 {
 
 const RunContext = struct {
     runtime: *Runtime,
-    app: App,
+    app: app_mod.App,
 };
 
 const RuntimeWindow = struct {
@@ -1116,8 +1219,15 @@ const RuntimeWebView = struct {
 };
 
 const AsyncBridgeResponseSlot = struct {
-    in_use: bool = false,
+    /// Atomic claim flag. Acquired via `cmpxchgStrong(false, true, .acq_rel, .acquire)`
+    /// in `reserveAsyncBridgeResponse` so that two concurrent bridge callbacks cannot
+    /// both observe `false` and grab the same slot. Released with `.release` in
+    /// `release` and re-checked with `.acquire` in `respond`.
+    in_use: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// INTERNAL: not thread-safe. The runtime pointer and the copied source are
+    /// only read/written by the thread that won the atomic claim.
     runtime: ?*Runtime = null,
+    /// INTERNAL: not thread-safe. See `runtime` above.
     source: bridge.Source = .{},
     origin_storage: [max_bridge_origin_bytes]u8 = undefined,
     webview_label_storage: [platform.max_webview_label_bytes]u8 = undefined,
@@ -1131,17 +1241,23 @@ const AsyncBridgeResponseSlot = struct {
             .window_id = source.window_id,
             .webview_label = try copyInto(&self.webview_label_storage, source.webview_label),
         };
-        self.in_use = true;
+        // `in_use` was already claimed atomically by `reserveAsyncBridgeResponse`
+        // before this call; re-store `.release` to publish the rest of the slot
+        // state to any thread that later performs an `.acquire` load.
+        self.in_use.store(true, .release);
     }
 
     fn release(self: *AsyncBridgeResponseSlot) void {
-        self.in_use = false;
+        self.in_use.store(false, .release);
         self.runtime = null;
         self.source = .{};
     }
 
+    /// Async bridge responder callback. Signature uses `anyerror` because it is
+    /// stored in a `bridge.AsyncResponder` and must match the expected callback
+    /// type, which allows arbitrary errors from the eventual platform response.
     fn respond(self: *AsyncBridgeResponseSlot, response: []const u8) anyerror!void {
-        if (!self.in_use) return error.AsyncBridgeResponseAlreadyCompleted;
+        if (!self.in_use.load(.acquire)) return error.AsyncBridgeResponseAlreadyCompleted;
         const runtime = self.runtime orelse return error.AsyncBridgeResponseAlreadyCompleted;
         const source = self.source;
         defer self.release();
@@ -1222,6 +1338,9 @@ fn writeWindowJsonToWriter(window: platform.WindowInfo, writer: anytype) !void {
     try writer.writeByte('}');
 }
 
+/// Maps a runtime or platform error to a human-readable bridge error message.
+/// Parameter is `anyerror` because callers may pass any error from the window,
+/// webview, or dialog bridge paths.
 fn builtinBridgeErrorMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.UnsupportedService => "Native service is not available on this platform",
@@ -1254,6 +1373,9 @@ fn builtinBridgeErrorMessage(err: anyerror) []const u8 {
     };
 }
 
+/// Maps a runtime or platform error to a bridge `ErrorCode`.
+/// Parameter is `anyerror` because callers may pass any error from the window,
+/// webview, or dialog bridge paths.
 fn builtinBridgeErrorCode(err: anyerror) bridge.ErrorCode {
     return switch (err) {
         error.UnsupportedService,
@@ -1355,15 +1477,21 @@ fn jsonBoolField(payload: []const u8, field: []const u8) ?bool {
     return json.boolField(payload, field);
 }
 
+/// Returns a test harness type that wires a `Runtime` to a `NullPlatform`.
 pub fn TestHarness() type {
     return struct {
         const Self = @This();
 
+        /// In-memory platform implementation.
         null_platform: platform.NullPlatform = platform.NullPlatform.init(.{}),
+        /// Backing storage for captured trace records.
         trace_records: [64]trace.Record = undefined,
+        /// Trace sink feeding `trace_records`.
         trace_sink: trace.BufferSink = undefined,
+        /// Runtime under test.
         runtime: Runtime = undefined,
 
+        /// Initializes the harness with the given `surface`.
         pub fn init(self: *Self, surface: platform.Surface) void {
             self.null_platform = platform.NullPlatform.init(surface);
             self.trace_sink = trace.BufferSink.init(&self.trace_records);
@@ -1373,13 +1501,19 @@ pub fn TestHarness() type {
             });
         }
 
-        pub fn start(self: *Self, app: App) anyerror!void {
+        /// Simulates startup: dispatches `app_start`, `surface_resized`, and the first
+        /// frame. Return type is `anyerror!void` because it exercises the same
+        /// app-callback and platform paths as production startup.
+        pub fn start(self: *Self, app: app_mod.App) anyerror!void {
             try self.runtime.dispatchPlatformEvent(app, .app_start);
             try self.runtime.dispatchPlatformEvent(app, .{ .surface_resized = self.null_platform.surface_value });
             try self.runtime.dispatchPlatformEvent(app, .frame_requested);
         }
 
-        pub fn stop(self: *Self, app: App) anyerror!void {
+        /// Simulates shutdown by dispatching `app_shutdown`. Return type is
+        /// `anyerror!void` because it exercises the same app-callback paths as
+        /// production shutdown.
+        pub fn stop(self: *Self, app: app_mod.App) anyerror!void {
             try self.runtime.dispatchPlatformEvent(app, .app_shutdown);
         }
     };
@@ -1404,7 +1538,7 @@ test "runtime loads app source into platform webview" {
 
 test "runtime rejects oversized webview source" {
     const TestApp = struct {
-        bytes: [platform.max_window_source_bytes + 1]u8 = [_]u8{'x'} ** (platform.max_window_source_bytes + 1),
+        bytes: [platform.max_window_source_bytes + 1]u8 = @splat('x'),
 
         fn app(self: *@This()) App {
             return .{ .context = self, .name = "oversized-source", .source = platform.WebViewSource.html(&self.bytes) };
@@ -1986,7 +2120,7 @@ test "runtime validates webview bridge commands" {
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "WebView was not found") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"invalid_request\"") != null);
 
-    var long_label = [_]u8{'a'} ** (platform.max_webview_label_bytes + 1);
+    var long_label: [platform.max_webview_label_bytes + 1]u8 = @splat('a');
     var long_label_request_buffer: [512]u8 = undefined;
     const long_label_request = try std.fmt.bufPrint(&long_label_request_buffer, "{{\"id\":\"long-label\",\"command\":\"zero-native.webview.create\",\"payload\":{{\"label\":\"{s}\",\"url\":\"https://example.com\",\"frame\":{{\"width\":300,\"height\":200}}}}}}", .{&long_label});
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
@@ -1997,7 +2131,7 @@ test "runtime validates webview bridge commands" {
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "WebView label is too large") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"invalid_request\"") != null);
 
-    var long_url = [_]u8{'a'} ** (platform.max_webview_url_bytes + 1);
+    var long_url: [platform.max_webview_url_bytes + 1]u8 = @splat('a');
     var long_url_request_buffer: [platform.max_webview_url_bytes + 256]u8 = undefined;
     const long_url_request = try std.fmt.bufPrint(&long_url_request_buffer, "{{\"id\":\"long-url\",\"command\":\"zero-native.webview.create\",\"payload\":{{\"label\":\"too-long-url\",\"url\":\"{s}\",\"frame\":{{\"width\":300,\"height\":200}}}}}}", .{&long_url});
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{

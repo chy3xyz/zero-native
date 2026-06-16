@@ -8,7 +8,7 @@ pub const BundleStats = struct {
 
 pub fn bundle(allocator: std.mem.Allocator, io: std.Io, assets_dir_path: []const u8, output_dir_path: []const u8) !BundleStats {
     var cwd = std.Io.Dir.cwd();
-    cwd.createDirPath(io, output_dir_path) catch {};
+    cwd.createDirPath(io, output_dir_path) catch {}; // best-effort: output directory may already exist
     var assets_dir = cwd.openDir(io, assets_dir_path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => {
             try writeManifest(allocator, io, output_dir_path, &.{});
@@ -101,7 +101,7 @@ fn readFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
 
 fn writeFilePath(io: std.Io, path: []const u8, bytes: []const u8) !void {
     if (std.fs.path.dirname(path)) |parent| {
-        std.Io.Dir.cwd().createDirPath(io, parent) catch {};
+        std.Io.Dir.cwd().createDirPath(io, parent) catch {}; // best-effort: parent directories may already exist
     }
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes });
 }
@@ -113,7 +113,7 @@ test "empty missing asset directory creates empty manifest" {
 
 test "bundle recursively copies frontend asset trees" {
     const cwd = std.Io.Dir.cwd();
-    cwd.createDirPath(std.testing.io, ".zig-cache/test-recursive-assets/src/assets") catch {};
+    cwd.createDirPath(std.testing.io, ".zig-cache/test-recursive-assets/src/assets") catch {}; // best-effort: test directory may already exist
     try cwd.writeFile(std.testing.io, .{ .sub_path = ".zig-cache/test-recursive-assets/src/index.html", .data = "<script src=\"/assets/app.js\"></script>" });
     try cwd.writeFile(std.testing.io, .{ .sub_path = ".zig-cache/test-recursive-assets/src/assets/app.js", .data = "console.log('zero-native');" });
 
