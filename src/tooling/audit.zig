@@ -132,7 +132,45 @@ pub fn auditIn(base_dir: std.Io.Dir, allocator: std.mem.Allocator, io: std.Io, m
         try ctx.add(.warn, "metadata", "version is a placeholder", "set a real semver version (e.g. \"1.0.0\") before publishing");
     }
 
+    // Rule 6: macOS without .icns icon.
+    if (platformHas(metadata.platforms, "macos")) {
+        if (!iconsIncludeExt(metadata.icons, ".icns")) {
+            try ctx.add(.warn, "icons", "macOS is targeted but no .icns icon is listed", "add an icon. icns to the icons list (e.g. .{ \"assets/icon.icns\" })");
+        }
+    }
+
+    // Rule 7: Windows without .ico icon.
+    if (platformHas(metadata.platforms, "windows")) {
+        if (!iconsIncludeExt(metadata.icons, ".ico")) {
+            try ctx.add(.warn, "icons", "Windows is targeted but no .ico icon is listed", "add an icon. ico to the icons list (e.g. .{ \"assets/icon.ico\" })");
+        }
+    }
+
+    // Rule 8: empty platforms list.
+    if (metadata.platforms.len == 0) {
+        try ctx.add(.warn, "metadata", "platforms list is empty", "declare the platforms this app targets (e.g. .{ \"macos\", \"linux\", \"windows\" })");
+    }
+
+    // Rule 9: CEF engine with no dir.
+    if (std.mem.eql(u8, metadata.web_engine, "cef") and metadata.cef.dir.len == 0) {
+        try ctx.add(.@"error", "web-engine", "web_engine = \"cef\" but cef.dir is empty", "set cef.dir to the CEF runtime path (e.g. \"third_party/cef/macos\")");
+    }
+
     return .{ .findings = try ctx.findings.toOwnedSlice(allocator) };
+}
+
+fn platformHas(platforms: []const []const u8, target: []const u8) bool {
+    for (platforms) |p| {
+        if (std.mem.eql(u8, p, target)) return true;
+    }
+    return false;
+}
+
+fn iconsIncludeExt(icons: []const []const u8, ext: []const u8) bool {
+    for (icons) |icon| {
+        if (std.mem.endsWith(u8, icon, ext)) return true;
+    }
+    return false;
 }
 
 fn printReport(report: Report) void {
@@ -200,7 +238,7 @@ const auditFixture =
     \\  .id = "com.example.audit",
     \\  .name = "audit-good",
     \\  .version = "1.2.3",
-    \\  .icons = .{ "assets/icon.png" },
+    \\  .icons = .{ "assets/icon.icns" },
     \\  .platforms = .{ "macos" },
     \\  .security = .{
     \\    .navigation = .{
@@ -251,7 +289,7 @@ test "audit on wildcard origin produces a warning" {
         \\  .id = "com.example.audit",
         \\  .name = "audit-wildcard",
         \\  .version = "1.2.3",
-        \\  .icons = .{ "assets/icon.png" },
+        \\  .icons = .{ "assets/icon.icns" },
         \\  .platforms = .{ "macos" },
         \\  .security = .{
         \\    .navigation = .{
