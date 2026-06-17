@@ -1,0 +1,46 @@
+# Plugin: Shell
+
+Spawns child processes via `std.process.spawn`. Records the exit code for inspection. Demonstrates the `custom/shell` capability and the `|`-separated argv payload convention.
+
+## Commands
+
+| Command | Payload format | Description |
+|---------|----------------|-------------|
+| `shell.execute` | `arg0\|arg1\|...` | Spawns the child with the parsed argv. Empty payload uses `default_argv` (`["true"]`) |
+| `shell.execute` | `sh\|-c\|true` | Equivalent to running `sh -c true` and exits 0 |
+| `shell.execute` | `sh\|-c\|exit 7` | Child exits 7, recorded in `state.last_exit_code` |
+
+## State
+
+- `state.last_exit_code` — exit code from the most recent spawn; `-1` (`spawn_failure_exit_code`) on any failure
+- `state.io_thread` — owned `std.Io.Threaded` for `spawn`'s allocator requirement
+- `max_argv` — 32; payloads with more parts are recorded as a failure rather than truncated
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('shell.execute', 'sh|-c|echo hello');
+const code = await invoke('shell.execute', 'sh|-c|exit 7');
+// code = 7
+```
+
+## Notes
+
+- Stdout and stderr are routed to the null device; capture them via `stdio: .pipe` in your own plugin if you need the output.
+- On real OSes, treat argv as untrusted: validate arguments before invoking.
+- The `custom/shell` capability kind allows `registry.hasCapability(.custom)` queries to succeed.
+- `max_argv` (32) is enforced strictly; over-sized payloads are recorded as `spawn_failure_exit_code` rather than silently truncated.
+
+## Lifecycle
+
+```zig
+const module = try plugin_shell.create(allocator);
+try registry.startAll(runtime);
+// ... dispatch shell.execute commands ...
+try registry.stopAll(runtime);
+```
+
+`stop` deinits the owned `std.Io.Threaded` instance and destroys the state struct. Make sure the allocator passed to `create` matches the one used in `stop` to avoid use-after-free.
+
+See [Extensions](/extensions) for the module lifecycle.

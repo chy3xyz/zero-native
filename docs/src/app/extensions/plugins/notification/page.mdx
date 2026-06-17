@@ -1,0 +1,45 @@
+# Plugin: Notification
+
+In-memory notification log with command dispatch. Records every emitted notification so it can be inspected in tests. Demonstrates the `custom/notification` capability and the `"title|message"` payload convention.
+
+## Commands
+
+| Command | Payload format | Description |
+|---------|----------------|-------------|
+| `notification.notify` | `title\|message` (split on first `|`) | Appends a notification. With no `|`, the whole payload is the title and the message is empty |
+| `notification.list` | none | Clears the recorded list (mirrors `notification.clear`) |
+| `notification.clear` | none | Clears the recorded list |
+
+## State
+
+- `state.notifications` — `std.ArrayList(Notification)` of `{ title, message }` slices, freed in `stop`
+- `state.allocator` — allocator that owns the duplicated title/message strings
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('notification.notify', 'Build complete|Your app is ready');
+await invoke('notification.notify', 'Title only');
+const log = await invoke('notification.list', '');
+// log is empty after list/clear
+```
+
+## Notes
+
+- The plugin is in-memory only. Real OS notifications require a native bridge to NSUserNotification / WinRT ToastNotification / libnotify.
+- The capability is registered as `Capability{ .kind = .custom, .name = "notification" }`.
+- `notification.list` and `notification.clear` behave identically — both clear the recorded list. Use whichever reads better at the call site.
+
+## Lifecycle
+
+```zig
+const module = try plugin_notification.create(allocator);
+try registry.startAll(runtime);
+// ... dispatch notification.notify, .list, .clear ...
+try registry.stopAll(runtime);
+```
+
+`stop` calls `NotificationState.deinit` which frees every recorded title/message, then destroys the state struct. The testing allocator will fail the test if any slice leaks.
+
+See [Extensions](/extensions) for the module lifecycle.

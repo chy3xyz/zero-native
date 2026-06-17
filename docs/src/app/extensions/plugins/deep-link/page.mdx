@@ -1,0 +1,46 @@
+# Plugin: Deep Link
+
+URL scheme handler registration with last-url recording. The plugin records the registered scheme and the last received deep link URL. Real OS-level URL scheme registration is platform-specific and must be done out of band.
+
+## Commands
+
+| Command | Payload format | Description |
+|---------|----------------|-------------|
+| `deep_link.register` | `scheme` (e.g. `"myapp"`) | Records the scheme, replacing any previously registered one |
+| `deep_link.last_url` | URL string | Records the last received deep link URL for inspection (fed by the OS delegate in production) |
+
+## State
+
+- `state.scheme` — most recently registered scheme (or `null`)
+- `state.last_url` — most recently received deep link URL (or `null`)
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('deep_link.register', 'myapp');
+await invoke('deep_link.last_url', 'myapp://open/profile');
+```
+
+## Notes
+
+- Real OS-level URL scheme registration requires platform configuration:
+  - **macOS**: add `CFBundleURLSchemes` → `["<scheme>"]` in `Info.plist`.
+  - **Linux**: add `MimeType=x-scheme-handler/<scheme>;` in the `.desktop` file.
+  - **Windows**: add `HKEY_CLASSES_ROOT\<scheme>\shell\open\command` registry key.
+- The plugin records the intent only; the OS delegate feeds `deep_link.last_url` once the URL is dispatched.
+- The capability is registered as `Capability{ .kind = .custom, .name = "deep-link" }`.
+- Empty payloads on `deep_link.register` are silently rejected — the previous scheme is preserved.
+
+## Lifecycle
+
+```zig
+const module = try plugin_deep_link.create(allocator);
+try registry.startAll(runtime);
+// ... dispatch deep_link.register, deep_link.last_url ...
+try registry.stopAll(runtime);
+```
+
+`start` logs the registered scheme via `std.log.debug`; `stop` frees the recorded scheme/url slices and destroys the state struct. Pair the plugin with the OS-level delegate that calls `deep_link.last_url` once a deep link arrives.
+
+See [Extensions](/extensions) for the module lifecycle.

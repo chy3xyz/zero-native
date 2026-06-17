@@ -1,0 +1,46 @@
+# Plugin: Store
+
+In-memory key-value store with command dispatch. Records every key/value so it can be inspected in tests. Demonstrates the `custom/store` capability and the `"key|value"` payload convention.
+
+## Commands
+
+| Command | Payload format | Description |
+|---------|----------------|-------------|
+| `store.set` | `key\|value` (split on first `|`) | Inserts or replaces the entry. Empty key is silently rejected |
+| `store.get` | `key` | Records the value in `state.last_get`; clears it on a miss |
+| `store.remove` | `key` | Removes the entry and clears `state.last_get` |
+
+## State
+
+- `state.values` — `std.StringHashMap([]u8)` of key/value pairs
+- `state.last_get` — most recent value returned by `store.get` (or `null` for misses)
+- `state.allocator` — allocator that owns the duplicated keys and values
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('store.set', 'theme|dark');
+const value = await invoke('store.get', 'theme');
+// value = 'dark'
+await invoke('store.remove', 'theme');
+```
+
+## Notes
+
+- The plugin is in-memory only. For a persistent store, layer file I/O on top using the `filesystem` capability.
+- The capability is registered as `Capability{ .kind = .custom, .name = "store" }`.
+- `store.set` with a `|`-less payload is silently rejected — the previous entry is preserved.
+
+## Lifecycle
+
+```zig
+const module = try plugin_store.create(allocator);
+try registry.startAll(runtime);
+// ... dispatch store.set, store.get, store.remove ...
+try registry.stopAll(runtime);
+```
+
+`stop` iterates the `StringHashMap`, frees every key and value, and destroys the state struct. The testing allocator will fail the test if any key/value leaks.
+
+See [Extensions](/extensions) for the module lifecycle.

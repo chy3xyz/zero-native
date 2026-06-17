@@ -1,0 +1,47 @@
+# Plugin: Global Shortcut
+
+Records registered keyboard shortcut combos in memory. Real OS-level hotkey registration requires a platform backend (Carbon on macOS, `RegisterHotKey` on Windows, XCB on Linux); the plugin provides the API surface and an in-memory backend for testing.
+
+## Commands
+
+| Command | Payload format | Description |
+|---------|----------------|-------------|
+| `global_shortcut.register` | `Mod+Key` (e.g. `"CmdOrCtrl+Shift+K"`) | Records the combo. Empty payload is rejected |
+| `global_shortcut.unregister` | combo string | Removes the combo from the list. Unregistering a non-existent combo is a no-op |
+| `global_shortcut.list` | none | Records `state.last_count` for inspection (no return channel) |
+
+## State
+
+- `state.combos` — `std.ArrayList([]const u8)` of registered combo strings
+- `state.last_count` — most recent count from `global_shortcut.list`
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('global_shortcut.register', 'CmdOrCtrl+Shift+K');
+await invoke('global_shortcut.register', 'Alt+Tab');
+await invoke('global_shortcut.unregister', 'Alt+Tab');
+```
+
+## Notes
+
+- Real OS hotkey registration is platform-specific:
+  - **macOS**: Carbon `RegisterEventHotKey`.
+  - **Windows**: `RegisterHotKey` Win32 API.
+  - **Linux**: XCB `xcb_grab_key` or a portal/desktop portal listener.
+- The capability is registered as `Capability{ .kind = .custom, .name = "global-shortcut" }`.
+- Empty payloads on `register` and `unregister` are silently rejected.
+
+## Lifecycle
+
+```zig
+const module = try plugin_global_shortcut.create(allocator);
+try registry.startAll(runtime);
+// ... dispatch global_shortcut.register, .unregister, .list ...
+try registry.stopAll(runtime);
+```
+
+`stop` iterates the combo list, frees every duplicated combo string, deinits the `ArrayList`, and destroys the state struct. Use `state.last_count` to peek at the list size after `global_shortcut.list` without an output channel.
+
+See [Extensions](/extensions) for the module lifecycle.

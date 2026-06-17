@@ -4,9 +4,21 @@ All notable changes to zero-native will be documented in this file.
 
 ## Unreleased
 
+### New Features
+
+- **Capabilities system**: Per-window structured capabilities with allow/deny scope globs for commands and paths, scoped `$APPDATA` / `$HOME` variables, and the `security.capabilities` manifest block to gate bridge commands and file access on a per-window basis.
+- **Content-Security-Policy injection**: Runtime-injected `<meta http-equiv="Content-Security-Policy">` tag for `.html` webview sources via `WebViewSource.htmlWithCsp`, with `security.csp_injected`, `security.csp_invalid`, and `security.csp_skipped` trace events for diagnostics.
+- **Bundled plugins**: Eleven reference plugins demonstrating common patterns: clipboard, shell, notification, http, deep-link, store, autostart, single-instance, updater, global-shortcut, and websocket.
+- **Channel streaming**: `bridge.Channel(T)` typed value streaming over the bridge with `value` and `end` JSON frames for `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `bool`, and `[]const u8` payloads.
+- **Type-Safe IPC (codegen)**: Comptime TypeScript declaration generator that emits `.d.ts` overloads of `invoke` from `CommandSchema` and `ParamSchema` so `window.zero.invoke` is fully typed in the frontend.
+- **Auto-updater**: Built-in updater plugin with manifest-driven update channels, signature verification, and staged rollouts.
+- **App Sandbox**: macOS App Sandbox opt-in via the `[security.sandbox]` manifest block, with dynamic entitlements plist generation, `MacOSSandbox` field reference, and code-sign integration.
+- **Bridge error codes and policy refinement**: Default-deny command policy, exact-origin checks, wildcard `*` limited to `http(s)`, and explicit `builtin_bridge` policy required for dialogs.
+
 ### Improvements
 
 - **Zig 0.17 compatibility**: Bump `minimum_zig_version` to `0.17.0` and migrate the framework, CLI, and example build scripts to the Zig 0.17 toolchain. The migration covers the removed `Allocator.dupeZ` API, the removed `**` array repeat operator (replaced by `@splat`), the new `@typeInfo(T).@"enum"` field layout (`field_names` / `field_values` instead of `fields`), and the removal of the `b.sysroot` build field (replaced by an explicit `sdk_path` argument computed via `std.zig.system.darwin.getSdk`).
+- **Documentation site**: Add individual pages and a `Bundled Plugins` matrix for all 11 reference plugins (clipboard, shell, notification, http, deep-link, store, autostart, single-instance, updater, global-shortcut, websocket), a `Type-Safe IPC (Codegen)` reference for the bridge codegen API, and an `App Sandbox` reference documenting the `MacOSSandbox` schema, manifest block, and generated entitlements plist.
 
 ## 0.2.0
 

@@ -1,0 +1,46 @@
+# Bundled Plugins
+
+zero-native ships with 11 reference plugins demonstrating common patterns. Each plugin lives in `src/extensions/plugin_<name>.zig` and registers through the same `ModuleRegistry` hook system described in the [Extensions](/extensions) page.
+
+## Plugin matrix
+
+| Name | ModuleId | Capability | Page | Description |
+|------|----------|------------|------|-------------|
+| clipboard | 100 | `clipboard` | [Plugin: Clipboard](/extensions/plugins/clipboard) | In-memory text buffer with write/read commands |
+| shell | 101 | `custom/shell` | [Plugin: Shell](/extensions/plugins/shell) | Spawn child processes via `std.process.spawn` |
+| notification | 102 | `custom/notification` | [Plugin: Notification](/extensions/plugins/notification) | In-memory notification log |
+| http | 103 | `network` | [Plugin: HTTP](/extensions/plugins/http) | Real HTTP/1.1 fetch via vendored client |
+| deep-link | 104 | `custom/deep-link` | [Plugin: Deep Link](/extensions/plugins/deep-link) | URL scheme registration with last-url recording |
+| store | 105 | `custom/store` | [Plugin: Store](/extensions/plugins/store) | In-memory key-value store |
+| autostart | 106 | `custom/autostart` | [Plugin: Autostart](/extensions/plugins/autostart) | OS-level autostart file management |
+| single-instance | 107 | `custom/single-instance` | [Plugin: Single Instance](/extensions/plugins/single-instance) | Lock file based mutex |
+| updater | 108 | `custom/updater` | [Plugin: Updater](/extensions/plugins/updater) | Manifest parser and version comparison |
+| global-shortcut | 109 | `custom/global-shortcut` | [Plugin: Global Shortcut](/extensions/plugins/global-shortcut) | Keyboard combo registration |
+| websocket | 110 | `network` | [Plugin: WebSocket](/extensions/plugins/websocket) | RFC 6455 frame encode/decode |
+
+## Conventions
+
+All plugins follow the same conventions:
+
+- Commands are routed by `cmd.name` only. Any argument string lives in `cmd.payload`.
+- Common shapes for payloads: `arg1|arg2|...` (pipe-separated), or a single key/value pair.
+- Each plugin exposes `create(allocator, ...)` returning an `extensions.Module` and `command(ctx, runtime, cmd)`.
+- Tests inspect plugin state directly because the extension `Command` has no return channel.
+
+## Wiring a plugin
+
+```zig
+const extensions = @import("zero-native").extensions;
+const clipboard_plugin = @import("zero-native/src/extensions/plugin_clipboard.zig");
+
+const modules = [_]extensions.Module{
+    try clipboard_plugin.create(allocator),
+};
+
+var runtime = try zero_native.Runtime.init(.{
+    .platform = my_platform,
+    .extensions = .{ .modules = &modules },
+});
+```
+
+See [Extensions](/extensions) for the full module and hook API.
