@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>With Plugins</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: -apple-system, system-ui, sans-serif; background: #f8fafc; color: #0f172a; }
+    main { width: min(560px, calc(100vw - 48px)); padding: 32px; border-radius: 18px; background: white; box-shadow: 0 20px 50px rgba(15, 23, 42, 0.12); }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    p { margin: 0 0 20px; line-height: 1.5; color: #475569; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    button { border: 0; border-radius: 999px; padding: 10px 16px; font: inherit; font-weight: 600; color: white; background: #2563eb; cursor: pointer; }
+    pre { min-height: 56px; margin: 18px 0 0; padding: 14px; border-radius: 12px; overflow: auto; background: #0f172a; color: #dbeafe; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>With Plugins</h1>
+    <p>Three bundled plugins are loaded from <code>app.zon</code>: <strong>clipboard</strong>, <strong>notification</strong>, and <strong>store</strong>. Click a button to invoke one from the webview.</p>
+    <div class="actions">
+      <button id="clipboard" type="button">Copy 'hello' to clipboard</button>
+      <button id="notify" type="button">Notify 'Hello!'</button>
+      <button id="store" type="button">Store 'last_click' key</button>
+    </div>
+    <pre id="output">Bridge ready.</pre>
+  </main>
+  <script>
+    const output = document.querySelector("#output");
+    // `window.zero.invoke` is the bridge entry point. The IIFE installs a
+    // promise-returning `invoke` only inside its closure, so we alias it here
+    // for the click handlers below.
+    const invoke = window.zero.invoke.bind(window.zero);
+
+    function show(value) {
+      output.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    }
+
+    document.querySelector("#clipboard").addEventListener("click", async () => {
+      try {
+        await invoke("clipboard.write_text", "hello");
+        show("clipboard.write_text ok");
+      } catch (error) {
+        show(`${error.code || "error"}: ${error.message}`);
+      }
+    });
+
+    document.querySelector("#notify").addEventListener("click", async () => {
+      try {
+        await invoke("notification.notify", "Hello!|From zero-native");
+        show("notification.notify ok");
+      } catch (error) {
+        show(`${error.code || "error"}: ${error.message}`);
+      }
+    });
+
+    document.querySelector("#store").addEventListener("click", async () => {
+      const timestamp = String(Date.now());
+      try {
+        await invoke("store.set", "last_click|" + timestamp);
+        show("store.set last_click=" + timestamp);
+      } catch (error) {
+        show(`${error.code || "error"}: ${error.message}`);
+      }
+    });
+  </script>
+</body>
+</html>

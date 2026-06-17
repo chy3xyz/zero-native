@@ -1078,3 +1078,5 @@ test "manifest metadata parser rejects invalid scope kind" {
     );
     try std.testing.expectError(error.InvalidScopeKind, result);
 }
+
+

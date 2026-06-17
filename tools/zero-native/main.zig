@@ -136,19 +136,13 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "plugins")) {
         try tooling.plugins_cli.run(allocator, init.io, args[2..]);
     } else if (std.mem.eql(u8, command, "audit")) {
-        tooling.audit.run(allocator, init.io, args[2..]) catch |err| switch (err) {
-            error.AuditFailed => std.process.exit(1),
-            else => return err,
-        };
+        const code = try tooling.audit.run(allocator, init.io, args[2..]);
+        if (code != 0) std.process.exit(code);
     } else if (std.mem.eql(u8, command, "skills")) {
         skills_cli.run(allocator, init.io, init.environ_map, args[2..]) catch |err| switch (err) {
             error.WriteFailed => return,
             else => return err,
         };
-    } else if (std.mem.eql(u8, command, "plugins")) {
-        try tooling.plugins_cli.run(allocator, init.io, args[2..]);
-    } else if (std.mem.eql(u8, command, "audit")) {
-        try tooling.audit.run(allocator, init.io, args[2..]);
     } else {
         return usage();
     }
@@ -174,7 +168,7 @@ fn usage() void {
         \\  automate <command>
         \\  skills list|get
         \\  plugins list|info <name>
-        \\  audit [app.zon]
+        \\  audit [app.zon]                    (exits 0 info, 1 warn, 2 error)
         \\  version
         \\
     , .{});
