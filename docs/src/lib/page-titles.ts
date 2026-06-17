@@ -18,6 +18,7 @@ export const PAGE_TITLES: Record<string, string> = {
   "cli/dev": "Dev Server",
   packaging: "Packaging",
   "packaging/signing": "Code Signing",
+  "packaging/ci": "CI/CD",
   updates: "Updates",
   "app-zon": "app.zon Reference",
   manifest: "Manifest Reference",
