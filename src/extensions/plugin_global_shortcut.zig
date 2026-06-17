@@ -25,6 +25,7 @@ pub const ShortcutState = struct {
     combos: std.ArrayList([]const u8),
     last_count: usize = 0,
     allocator: std.mem.Allocator,
+    io: std.Io,
 };
 
 /// No-op startup hook.
@@ -53,6 +54,7 @@ pub fn command(
         if (cmd.payload.len == 0) return;
         const combo = try state.allocator.dupe(u8, cmd.payload);
         try state.combos.append(state.allocator, combo);
+        registerNative(state.io, combo) catch {}; // platform wire-up pending
         return;
     }
 
@@ -74,14 +76,29 @@ pub fn command(
     }
 }
 
+/// Stub for real OS hotkey registration. Real implementation would call:
+///   macOS: Carbon `RegisterEventHotKey`
+///   Linux: XCB / Wayland keybinding
+///   Windows: `RegisterHotKey`
+/// Returns success for now — the in-memory combo list is the source of truth.
+fn registerNative(io: std.Io, combo: []const u8) !void {
+    _ = io;
+    _ = combo;
+    // TODO: implement per-platform:
+    //   macOS: Carbon RegisterEventHotKey
+    //   Linux: XCB / Wayland keybinding
+    //   Windows: RegisterHotKey
+}
+
 /// Allocate the plugin state and return a `Module` view.
-pub fn create(allocator: std.mem.Allocator) !extensions.Module {
+pub fn create(allocator: std.mem.Allocator, io: std.Io) !extensions.Module {
     const state = try allocator.create(ShortcutState);
     errdefer allocator.destroy(state);
     state.* = .{
         .combos = .empty,
         .last_count = 0,
         .allocator = allocator,
+        .io = io,
     };
     const capabilities = [_]extensions.Capability{
         .{ .kind = .custom, .name = "global-shortcut" },
@@ -107,9 +124,10 @@ pub fn create(allocator: std.mem.Allocator) !extensions.Module {
 
 test "global-shortcut register records a combo string" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
-    const module = try create(allocator);
+    const module = try create(allocator, io);
     try module.hooks.start_fn.?(module.context, runtime);
 
     try module.hooks.command_fn.?(module.context, runtime, .{
@@ -126,9 +144,10 @@ test "global-shortcut register records a combo string" {
 
 test "global-shortcut unregister removes a combo" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
-    const module = try create(allocator);
+    const module = try create(allocator, io);
     try module.hooks.start_fn.?(module.context, runtime);
 
     try module.hooks.command_fn.?(module.context, runtime, .{
@@ -171,9 +190,10 @@ test "global-shortcut unregister removes a combo" {
 
 test "global-shortcut multiple combos coexist" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
-    const module = try create(allocator);
+    const module = try create(allocator, io);
     try module.hooks.start_fn.?(module.context, runtime);
 
     try module.hooks.command_fn.?(module.context, runtime, .{
@@ -197,9 +217,10 @@ test "global-shortcut multiple combos coexist" {
 
 test "global-shortcut stop frees all strings" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
-    const module = try create(allocator);
+    const module = try create(allocator, io);
     try module.hooks.start_fn.?(module.context, runtime);
 
     try module.hooks.command_fn.?(module.context, runtime, .{
@@ -222,9 +243,10 @@ test "global-shortcut stop frees all strings" {
 
 test "global-shortcut registry integration" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
-    var module = try create(allocator);
+    var module = try create(allocator, io);
     const modules = [_]extensions.Module{module};
     const registry = extensions.ModuleRegistry{ .modules = &modules };
 
@@ -245,4 +267,24 @@ test "global-shortcut registry integration" {
 
     try registry.stopAll(runtime);
     module.context = undefined;
+}
+
+test "global-shortcut register calls native stub" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+
+    const module = try create(allocator, io);
+    try module.hooks.start_fn.?(module.context, runtime);
+
+    try module.hooks.command_fn.?(module.context, runtime, .{
+        .name = "global_shortcut.register",
+        .payload = "Cmd+Shift+A",
+    });
+
+    const state: *ShortcutState = @ptrCast(@alignCast(module.context));
+    try std.testing.expectEqual(@as(usize, 1), state.combos.items.len);
+    try std.testing.expectEqualStrings("Cmd+Shift+A", state.combos.items[0]);
+
+    try module.hooks.stop_fn.?(module.context, runtime);
 }

@@ -7,18 +7,22 @@
 //!    pure RFC 6455 primitives.
 //!
 //! 2. Plugin layer (`websocket.connect` / `websocket.send` / `websocket.close`)
-//!    that holds connection state and records parsed URL parts + outbound
-//!    frames for test inspection. Real TCP I/O is deferred — see the TODO
-//!    in `handleConnect`.
+//!    that holds connection state. When the plugin is created via
+//!    `createWithIo`, `websocket.connect` opens a real TCP stream and runs the
+//!    RFC 6455 handshake against the target host; subsequent `send` calls
+//!    write masked frames to that stream. `wss://` URLs still fall through to
+//!    record-only mode (TLS via httpz is future work).
 //!
 //! Commands are routed by `cmd.name`; payload lives in `cmd.payload`:
-//! - `websocket.connect` — `cmd.payload` is a `ws://` or `wss://` URL. The
-//!   parsed host/port/path/secure are recorded in `last_host` / `last_port` /
-//!   `last_path` / `last_secure`, and `connected` is set to `true`. Invalid
-//!   URLs set `connected = false` without raising an error.
-//! - `websocket.send`    — `cmd.payload` is the message text. Encodes a text
-//!   frame and records it in `last_sent_frame`.
-//! - `websocket.close`   — sets `connected = false`.
+//! - `websocket.connect` — `cmd.payload` is a `ws://` or `wss://` URL. With
+//!   `createWithIo`, the parsed host/port/path/secure are recorded and a
+//!   real TCP connection + RFC 6455 handshake is performed. With the
+//!   io-less `create`, the URL is parsed but no socket is opened.
+//! - `websocket.send`    — encodes `cmd.payload` as a text frame. If a real
+//!   stream is open, the frame is also written to it. Without an active
+//!   stream, the command returns `error.NotConnected`.
+//! - `websocket.close`   — closes any open stream and resets connection
+//!   state.
 
 const std = @import("std");
 const crypto = std.crypto;
@@ -193,7 +197,11 @@ pub fn encodeClientHandshake(
 /// Verifies that `response_bytes` is a valid WebSocket upgrade response (101).
 /// Checks for HTTP 101 status, `Upgrade: websocket`, and the correct
 /// `Sec-WebSocket-Accept` hash derived from `key + websocket_guid`.
-pub fn decodeHandshakeResponse(response_bytes: []const u8, key: []const u8) !bool {
+///
+/// `allocator` is used internally to build the expected accept string and
+/// must remain valid for the duration of the call. Pass `std.testing.allocator`
+/// from tests or a long-lived allocator in production.
+pub fn decodeHandshakeResponse(allocator: std.mem.Allocator, response_bytes: []const u8, key: []const u8) !bool {
     // Must start with "HTTP/1.1 101".
     if (!std.mem.startsWith(u8, response_bytes, "HTTP/1.1 101")) return false;
 
@@ -209,8 +217,8 @@ pub fn decodeHandshakeResponse(response_bytes: []const u8, key: []const u8) !boo
     sha1.update(websocket_guid);
     sha1.final(&sha1_buf);
 
-    const expected_accept = try base64Encode(std.testing.allocator, &sha1_buf);
-    defer std.testing.allocator.free(expected_accept);
+    const expected_accept = try base64Encode(allocator, &sha1_buf);
+    defer allocator.free(expected_accept);
 
     // Look for the accept header in the response.
     const accept_prefix = "Sec-WebSocket-Accept: ";
@@ -626,15 +634,15 @@ test "decodeHandshakeResponse validates 101 and accept header" {
     const response = try resp_buf.toOwnedSlice(allocator);
     defer allocator.free(response);
 
-    try std.testing.expect(try decodeHandshakeResponse(response, &key));
+    try std.testing.expect(try decodeHandshakeResponse(allocator, response, &key));
 
     // Bad status.
     const bad_status = "HTTP/1.1 400 Bad Request\r\n\r\n";
-    try std.testing.expect(!(try decodeHandshakeResponse(bad_status, &key)));
+    try std.testing.expect(!(try decodeHandshakeResponse(allocator, bad_status, &key)));
 
     // Missing upgrade header.
     const no_upgrade = "HTTP/1.1 101 Switching Protocols\r\n\r\n";
-    try std.testing.expect(!(try decodeHandshakeResponse(no_upgrade, &key)));
+    try std.testing.expect(!(try decodeHandshakeResponse(allocator, no_upgrade, &key)));
 }
 
 test "encodeFrame produces properly masked frame" {

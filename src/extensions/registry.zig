@@ -160,7 +160,7 @@ fn createPlugin(
     } else if (std.mem.eql(u8, name, "updater")) {
         return plugin_updater.create(allocator, io, config.current_version, config.manifest_url, config.public_key_b64);
     } else if (std.mem.eql(u8, name, "global-shortcut")) {
-        return plugin_global_shortcut.create(allocator);
+        return plugin_global_shortcut.create(allocator, io);
     } else if (std.mem.eql(u8, name, "websocket")) {
         return plugin_websocket.create(allocator);
     }

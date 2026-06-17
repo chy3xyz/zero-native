@@ -67,7 +67,7 @@ test "all 11 plugins register without conflicts" {
     modules[6] = try autostart.create(allocator, io, "all-plugins-test", ".zig-cache/all-plugins-test");
     modules[7] = try single_instance.create(allocator, io);
     modules[8] = try updater.create(allocator, io, "0.0.0", "http://localhost/manifest.json", "");
-    modules[9] = try global_shortcut.create(allocator);
+    modules[9] = try global_shortcut.create(allocator, io);
     modules[10] = try websocket.create(allocator);
 
     // Walk modules in reverse on failure so each `create`'s allocation

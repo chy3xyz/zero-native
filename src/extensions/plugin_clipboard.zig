@@ -75,15 +75,43 @@ pub fn command(
         if (state.text) |old| state.allocator.free(old);
         const text = if (cmd.payload.len == 0) default_text else cmd.payload;
         state.text = try state.allocator.dupe(u8, text);
+        // Push the text to the host OS clipboard. The stub succeeds on
+        // all platforms; native wiring (NSPasteboard on macOS, wl-copy /
+        // xclip on Linux, OpenClipboard on Windows) is future work.
+        writeNativeClipboard(text) catch {};
     } else if (std.mem.eql(u8, cmd.name, "clipboard.read_text")) {
         if (state.last_read) |old| {
             state.allocator.free(old);
             state.last_read = null;
         }
-        if (state.text) |text| {
-            state.last_read = try state.allocator.dupe(u8, text);
+        // Try to read from the host OS clipboard first. If that fails or
+        // returns nothing, fall back to the in-memory buffer.
+        if (readNativeClipboard(state.allocator)) |native| {
+            defer state.allocator.free(native);
+            state.last_read = try state.allocator.dupe(u8, native);
+        } else |_| {
+            if (state.text) |text| {
+                state.last_read = try state.allocator.dupe(u8, text);
+            }
         }
     }
+}
+
+/// Stub for writing to the host OS clipboard. Real implementation would call:
+///   macOS:   NSPasteboard
+///   Linux:   wl-copy / xclip
+///   Windows: OpenClipboard / SetClipboardData
+/// Returns success for now; the in-memory buffer remains the source of truth.
+fn writeNativeClipboard(text: []const u8) !void {
+    _ = text;
+    // TODO: implement per-platform native clipboard write.
+}
+
+/// Stub for reading from the host OS clipboard. Returns `error.NoClipboardData`
+/// for now. Real implementation would call the per-platform native API.
+fn readNativeClipboard(allocator: std.mem.Allocator) ![]u8 {
+    _ = allocator;
+    return error.NoClipboardData;
 }
 
 test "clipboard write then read round-trips the default text" {
