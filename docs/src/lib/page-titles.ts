@@ -4,6 +4,7 @@ export const PAGE_TITLES: Record<string, string> = {
   examples: "Examples",
   "app-model": "App Model",
   frontend: "Frontend Projects",
+  migrating: "Migration Guide",
   windows: "Windows",
   webviews: "Multiple WebViews",
   bridge: "Bridge",
