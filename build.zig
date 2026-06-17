@@ -95,7 +95,7 @@ pub fn build(b: *std.Build) void {
     debug_mod.addImport("app_dirs", app_dirs_mod);
     debug_mod.addImport("trace", trace_mod);
 
-    const httpz_dep = b.dependency("httpz", .{ .target = target });
+    const httpz_dep = b.dependency("httpz", .{ .target = target, .h3 = false });
     const httpz_mod = httpz_dep.module("httpz");
 
     const codegen_mod = module(b, target, optimize, "src/bridge/codegen.zig");

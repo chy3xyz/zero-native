@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .httpz = .{
-            .url = "git+https://github.com/chy3xyz/httpz.zig#9d9029d39086c4cde41199ec1b8885d54698b520",
-            .hash = "httpz-0.4.0-GHOr_HA4CQDedqSxh36R9EXuhSSKDzPgzyZqcdZWaw0p",
+            .url = "git+https://github.com/chy3xyz/httpz.zig#00fbf47114366bb0bf3a8c0aad2d48d8eb28af49",
+            .hash = "httpz-0.4.0-GHOr_IM9CQCevX0xBjybq75DjeFbvLEGK9uTh7y9r6Xo",
         },
     },
     .paths = .{
