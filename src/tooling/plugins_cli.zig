@@ -106,8 +106,9 @@ fn usage() void {
         \\usage: zero-native plugins <command>
         \\
         \\commands:
-        \\  list           List all 11 bundled plugins (default)
-        \\  info <name>    Show a single plugin's metadata
+        \\  list              List all 11 bundled plugins (default)
+        \\  info <name>       Show a single plugin's metadata
+        \\  create <name>     Scaffold a new plugin file in the current directory
         \\
     , .{});
 }
@@ -143,11 +144,15 @@ fn printInfo(allocator: std.mem.Allocator, name: []const u8) !void {
 }
 
 /// Parses args and dispatches to the matching handler. `args` carries the
-/// subcommand (and optional plugin name) from the parent CLI. `io` is
-/// accepted for parity with other tooling entry points; this command
-/// does not perform I/O.
+/// subcommand (and optional plugin name) from the parent CLI. `io` is used
+/// when the `create` subcommand writes a scaffolded plugin file.
 pub fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) !void {
-    _ = io;
+    try runInDir(allocator, io, std.Io.Dir.cwd(), args);
+}
+
+/// Same as `run` but operates on `dir` instead of the process cwd. Useful
+/// for tests that need to isolate generated plugin files.
+pub fn runInDir(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, args: []const []const u8) !void {
     if (args.len == 0) {
         try printList(allocator);
         return;
@@ -161,6 +166,13 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) !
             return error.MissingArgument;
         }
         try printInfo(allocator, args[1]);
+    } else if (std.mem.eql(u8, subcommand, "create")) {
+        if (args.len < 2) {
+            usage();
+            return error.MissingArgument;
+        }
+        try create(allocator, io, dir, args[1]);
+        std.debug.print("created plugin_{s}.zig\n", .{args[1]});
     } else if (std.mem.eql(u8, subcommand, "--help") or std.mem.eql(u8, subcommand, "-h")) {
         usage();
     } else {
@@ -168,6 +180,125 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) !
         // `zero-native plugins clipboard` working as a shortcut.
         try printInfo(allocator, subcommand);
     }
+}
+
+/// Validates a plugin name. Names must be non-empty, start with a lowercase
+/// letter, and contain only lowercase letters, digits, and dashes. They may
+/// not end with a dash.
+pub fn validateName(name: []const u8) error{InvalidPluginName}!void {
+    if (name.len == 0) return error.InvalidPluginName;
+    if (!std.ascii.isLower(name[0])) return error.InvalidPluginName;
+    if (name[name.len - 1] == '-') return error.InvalidPluginName;
+    for (name) |c| {
+        if (std.ascii.isLower(c) or std.ascii.isDigit(c) or c == '-') continue;
+        return error.InvalidPluginName;
+    }
+}
+
+/// Returns the next free module id for a newly scaffolded plugin. The
+/// bundled plugins occupy ids 100..110, so the first user-scaffolded id
+/// is 111.
+pub fn nextModuleId() u16 {
+    return 111;
+}
+
+/// Scaffolds a new plugin file named `plugin_<name>.zig` inside `dir`.
+/// The generated file contains a minimal but complete plugin module with
+/// `create`, `start`, `stop`, `command`, and a passing test.
+pub fn create(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8) !void {
+    try validateName(name);
+
+    const file_name = try std.fmt.allocPrint(allocator, "plugin_{s}.zig", .{name});
+    defer allocator.free(file_name);
+
+    const content = try renderTemplate(allocator, name, nextModuleId());
+    defer allocator.free(content);
+
+    try dir.writeFile(io, .{
+        .sub_path = file_name,
+        .data = content,
+    });
+}
+
+fn renderTemplate(allocator: std.mem.Allocator, name: []const u8, module_id: u16) ![]u8 {
+    var buffer: std.ArrayList(u8) = .empty;
+    errdefer buffer.deinit(allocator);
+
+    try buffer.print(allocator, "//! {s} plugin module — auto-generated scaffold.\n", .{name});
+    try buffer.appendSlice(allocator, "//!\n");
+    try buffer.appendSlice(allocator, "//! Edit the module id, name, commands, and state to match your plugin.\n");
+    try buffer.appendSlice(allocator, "\n");
+    try buffer.appendSlice(allocator, "const std = @import(\"std\");\n");
+    try buffer.appendSlice(allocator, "const extensions = @import(\"root.zig\");\n");
+    try buffer.appendSlice(allocator, "\n");
+    try buffer.print(allocator, "pub const ModuleId: extensions.ModuleId = {d};\n", .{module_id});
+    try buffer.appendSlice(allocator, "\n");
+    try buffer.appendSlice(allocator, "const PluginState = struct {\n");
+    try buffer.appendSlice(allocator, "    value: ?[]u8,\n");
+    try buffer.appendSlice(allocator, "    allocator: std.mem.Allocator,\n");
+    try buffer.appendSlice(allocator, "};\n");
+    try buffer.appendSlice(allocator, "\n");
+    try buffer.appendSlice(allocator, "pub fn create(allocator: std.mem.Allocator) !extensions.Module {\n");
+    try buffer.appendSlice(allocator, "    const state = try allocator.create(PluginState);\n");
+    try buffer.appendSlice(allocator, "    errdefer allocator.destroy(state);\n");
+    try buffer.appendSlice(allocator, "    state.* = .{\n");
+    try buffer.appendSlice(allocator, "        .value = null,\n");
+    try buffer.appendSlice(allocator, "        .allocator = allocator,\n");
+    try buffer.appendSlice(allocator, "    };\n");
+    try buffer.appendSlice(allocator, "    const capabilities = [_]extensions.Capability{.{\n");
+    try buffer.appendSlice(allocator, "        .kind = .custom,\n");
+    try buffer.print(allocator, "        .name = \"{s}\",\n", .{name});
+    try buffer.appendSlice(allocator, "    }};\n");
+    try buffer.appendSlice(allocator, "    return .{\n");
+    try buffer.appendSlice(allocator, "        .info = .{\n");
+    try buffer.appendSlice(allocator, "            .id = ModuleId,\n");
+    try buffer.print(allocator, "            .name = \"{s}\",\n", .{name});
+    try buffer.appendSlice(allocator, "            .capabilities = &capabilities,\n");
+    try buffer.appendSlice(allocator, "        },\n");
+    try buffer.appendSlice(allocator, "        .context = @ptrCast(state),\n");
+    try buffer.appendSlice(allocator, "        .hooks = .{\n");
+    try buffer.appendSlice(allocator, "            .start_fn = start,\n");
+    try buffer.appendSlice(allocator, "            .stop_fn = stop,\n");
+    try buffer.appendSlice(allocator, "            .command_fn = command,\n");
+    try buffer.appendSlice(allocator, "        },\n");
+    try buffer.appendSlice(allocator, "    };\n");
+    try buffer.appendSlice(allocator, "}\n");
+    try buffer.appendSlice(allocator, "\n");
+    try buffer.appendSlice(allocator, "pub fn start(_: *anyopaque, _: extensions.RuntimeContext) anyerror!void {}\n");
+    try buffer.appendSlice(allocator, "\n");
+    try buffer.appendSlice(allocator, "pub fn stop(context: *anyopaque, _: extensions.RuntimeContext) anyerror!void {\n");
+    try buffer.appendSlice(allocator, "    const state: *PluginState = @ptrCast(@alignCast(context));\n");
+    try buffer.appendSlice(allocator, "    if (state.value) |old| state.allocator.free(old);\n");
+    try buffer.appendSlice(allocator, "    state.allocator.destroy(state);\n");
+    try buffer.appendSlice(allocator, "}\n");
+    try buffer.appendSlice(allocator, "\n");
+    try buffer.appendSlice(allocator, "pub fn command(\n");
+    try buffer.appendSlice(allocator, "    context: *anyopaque,\n");
+    try buffer.appendSlice(allocator, "    _: extensions.RuntimeContext,\n");
+    try buffer.appendSlice(allocator, "    cmd: extensions.Command,\n");
+    try buffer.appendSlice(allocator, ") anyerror!void {\n");
+    try buffer.appendSlice(allocator, "    const state: *PluginState = @ptrCast(@alignCast(context));\n");
+    try buffer.print(allocator, "    if (std.mem.eql(u8, cmd.name, \"{s}.ping\")) {{\n", .{name});
+    try buffer.appendSlice(allocator, "        if (state.value) |old| state.allocator.free(old);\n");
+    try buffer.appendSlice(allocator, "        state.value = try state.allocator.dupe(u8, \"pong\");\n");
+    try buffer.appendSlice(allocator, "    }\n");
+    try buffer.appendSlice(allocator, "}\n");
+    try buffer.appendSlice(allocator, "\n");
+    try buffer.print(allocator, "test \"{s} create round-trips ping\" {{\n", .{name});
+    try buffer.appendSlice(allocator, "    const allocator = std.testing.allocator;\n");
+    try buffer.appendSlice(allocator, "    const module = try create(allocator);\n");
+    try buffer.appendSlice(allocator, "    const runtime: extensions.RuntimeContext = .{ .platform_name = \"null\" };\n");
+    try buffer.appendSlice(allocator, "    const state: *PluginState = @ptrCast(@alignCast(module.context));\n");
+    try buffer.appendSlice(allocator, "\n");
+    try buffer.appendSlice(allocator, "    try std.testing.expect(state.value == null);\n");
+    try buffer.print(allocator, "    try module.hooks.command_fn.?(module.context, runtime, .{{ .name = \"{s}.ping\" }});\n", .{name});
+    try buffer.appendSlice(allocator, "    try std.testing.expectEqualStrings(\"pong\", state.value.?);\n");
+    try buffer.appendSlice(allocator, "    if (module.hooks.stop_fn) |stop_fn| {\n");
+    try buffer.appendSlice(allocator, "        try stop_fn(module.context, runtime);\n");
+    try buffer.appendSlice(allocator, "    }\n");
+    try buffer.appendSlice(allocator, "}\n");
+
+    return buffer.toOwnedSlice(allocator);
 }
 
 // Sanity check: make sure the bundled plugin ids fit in `u16`. The
@@ -208,4 +339,48 @@ test "run with list does not error" {
 test "run with info http does not error" {
     const io = std.testing.io;
     try run(std.testing.allocator, io, &.{ "info", "http" });
+}
+
+test "validateName accepts valid plugin names" {
+    try validateName("hello");
+    try validateName("my-plugin");
+    try validateName("plugin123");
+}
+
+test "validateName rejects invalid plugin names" {
+    try std.testing.expectError(error.InvalidPluginName, validateName(""));
+    try std.testing.expectError(error.InvalidPluginName, validateName("Hello"));
+    try std.testing.expectError(error.InvalidPluginName, validateName("my_plugin"));
+    try std.testing.expectError(error.InvalidPluginName, validateName("-plugin"));
+    try std.testing.expectError(error.InvalidPluginName, validateName("plugin-"));
+}
+
+test "nextModuleId returns 111" {
+    try std.testing.expectEqual(@as(u16, 111), nextModuleId());
+}
+
+test "create writes plugin file with expected module id" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try create(allocator, io, tmp.dir, "demo");
+
+    const content = try tmp.dir.readFileAlloc(io, "plugin_demo.zig", allocator, .unlimited);
+    defer allocator.free(content);
+
+    try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, "pub const ModuleId: extensions.ModuleId = 111"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, content, 1, "pub fn create"));
+}
+
+test "run with create writes plugin file" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try runInDir(allocator, io, tmp.dir, &.{ "create", "my-plugin" });
+
+    _ = try tmp.dir.statFile(io, "plugin_my-plugin.zig", .{});
 }

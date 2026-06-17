@@ -167,7 +167,7 @@ fn usage() void {
         \\  package-android [--output path] [--binary path]
         \\  automate <command>
         \\  skills list|get
-        \\  plugins list|info <name>
+        \\  plugins list|info <name>|create <name>
         \\  audit [app.zon]                    (exits 0 info, 1 warn, 2 error)
         \\  version
         \\
