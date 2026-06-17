@@ -1,0 +1,60 @@
+# API Reference: Channel
+
+A `Channel(T)` streams typed values from Zig to JavaScript over the bridge. Each value is delivered as a JSON frame identified by a `StreamId`. A channel is opened when constructed and is closed explicitly with `close`. The on-the-wire format is documented in [Type-Safe IPC](/bridge/codegen).
+
+## Channel(T)
+
+```zig
+pub fn Channel(comptime T: type) type;
+```
+
+The returned struct is generic over `T`. Supported payload types are `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `bool`, and `[]const u8`. Other types fail at compile time via `@compileError`.
+
+```zig
+pub const Channel(T) = struct {
+    id: StreamId,
+    writer: *const fn (ctx: *anyopaque, frame_json: []const u8) anyerror!void,
+    writer_ctx: *anyopaque,
+    allocator: std.mem.Allocator,
+    _closed: bool = false,
+};
+```
+
+## Methods
+
+```zig
+pub fn send(self: *Channel(T), value: T) !void;
+pub fn close(self: *Channel(T)) !void;
+pub fn isOpen(self: *Channel(T)) bool;
+```
+
+- `send` serializes `value`, wraps it in a `value` frame, and hands the JSON to `writer`. Sending on a closed channel is a no-op.
+- `close` is idempotent; only the first call emits an `end` frame.
+- `isOpen` reflects whether `close` has been called.
+
+## Frame protocol
+
+The bridge carries two frame kinds: `value` (a serialized `T`) and `end` (the empty string). A typical exchange looks like:
+
+```json
+{"stream":1,"kind":"value","payload":42}
+{"stream":1,"kind":"end","payload":""}
+```
+
+## Low-level encoder
+
+```zig
+pub fn encodeFrame(
+    allocator: std.mem.Allocator,
+    id: StreamId,
+    kind: FrameKind,
+    payload_json: []const u8,
+) ![]u8;
+
+pub const StreamId = u64;
+pub const FrameKind = enum { value, end };
+```
+
+`encodeFrame` allocates a tight JSON envelope around a pre-serialized `payload_json`. Use it directly when you need a custom payload type that `Channel(T)` does not support.
+
+See also: [Type-Safe IPC](/bridge/codegen), [Runtime.createStreamChannel](/api/runtime).

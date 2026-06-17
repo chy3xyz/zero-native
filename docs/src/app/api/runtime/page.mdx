@@ -1,0 +1,97 @@
+# API Reference: Runtime
+
+`Runtime` is the central struct that drives a single zero-native app. It owns the platform surface, the window and webview tables, the in-flight async bridge responses, and the frame state machine. One `Runtime` is created per process and lives until shutdown. See [App Model](/app-model) for the lifecycle.
+
+## Construction
+
+```zig
+var runtime = zero_native.Runtime.init(options);
+try runtime.run(app);
+```
+
+`init` populates the surface from `options.platform.surface()`. `run` blocks on platform events until `.app_shutdown` is observed and is the only place the platform event loop is entered.
+
+## Methods
+
+<table>
+  <thead>
+    <tr>
+      <th>Method</th>
+      <th>Returns</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>init(options)</code></td>
+      <td><code>Runtime</code></td>
+      <td>Build a runtime from <code>Options</code>; no I/O happens</td>
+    </tr>
+    <tr>
+      <td><code>run(app)</code></td>
+      <td><code>anyerror!void</code></td>
+      <td>Configure security, then enter the platform event loop</td>
+    </tr>
+    <tr>
+      <td><code>createWindow(options)</code></td>
+      <td><code>anyerror!WindowInfo</code></td>
+      <td>Reserve a window, create the native handle, load the webview</td>
+    </tr>
+    <tr>
+      <td><code>listWindows(output)</code></td>
+      <td><code>[]const WindowInfo</code></td>
+      <td>Copy up to <code>output.len</code> window records and return the slice</td>
+    </tr>
+    <tr>
+      <td><code>focusWindow(id)</code> / <code>closeWindow(id)</code></td>
+      <td><code>anyerror!void</code></td>
+      <td>Focus or close the matching window and its webviews</td>
+    </tr>
+    <tr>
+      <td><code>emitWindowEvent(id, name, json)</code></td>
+      <td><code>anyerror!void</code></td>
+      <td>Dispatch a custom event into the webview; <code>json</code> must be valid JSON</td>
+    </tr>
+    <tr>
+      <td><code>dispatchEvent(app, event)</code></td>
+      <td><code>anyerror!void</code></td>
+      <td>Route a runtime <code>Event</code> to <code>app.event</code> and extensions</td>
+    </tr>
+    <tr>
+      <td><code>frame(app)</code></td>
+      <td><code>anyerror!void</code></td>
+      <td>Publish a single frame, update diagnostics, reset invalidation</td>
+    </tr>
+    <tr>
+      <td><code>frameDiagnostics()</code></td>
+      <td><code>FrameDiagnostics</code></td>
+      <td>Snapshot the last published frame's counters</td>
+    </tr>
+    <tr>
+      <td><code>automationSnapshot(title)</code></td>
+      <td><code>automation.snapshot.Input</code></td>
+      <td>Build a snapshot of the window table and diagnostics</td>
+    </tr>
+    <tr>
+      <td><code>respondToBridge(source, response)</code></td>
+      <td><code>anyerror!void</code></td>
+      <td>Deliver a JSON response for an in-flight async bridge request</td>
+    </tr>
+    <tr>
+      <td><code>createStreamChannel(T, id, label)</code></td>
+      <td><code>!Channel(T)</code></td>
+      <td>Allocate a fresh <code>StreamId</code> and return a typed channel</td>
+    </tr>
+    <tr>
+      <td><code>invalidate()</code> / <code>invalidateFor(reason, region)</code></td>
+      <td><code>void</code></td>
+      <td>Mark the next frame for repaint, optionally with a dirty region</td>
+    </tr>
+  </tbody>
+</table>
+
+## Threading
+
+Every `Runtime` field is owned by the thread that called `init`. Reading or writing them from a foreign thread is undefined behavior. The only exception is `next_stream_id`, which is an atomic counter so concurrent channel allocations do not collide.
+
+See also: [App Model](/app-model), [Bridge](/bridge), [Channel](/api/channel).

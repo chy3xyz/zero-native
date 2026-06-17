@@ -1,0 +1,92 @@
+# Examples
+
+zero-native ships with 9 example projects under `examples/`. Each one is a complete, runnable app that demonstrates a different starting point: a different frontend framework, a different runtime scenario, or a different target platform.
+
+## Projects
+
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Frontend</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><a href="https://github.com/zero-native/zero-native/blob/main/examples/hello/README.md">hello</a></td>
+      <td>Pure Zig + inline HTML</td>
+      <td>The simplest possible app: a single inline HTML page rendered in the system WebView</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/zero-native/zero-native/blob/main/examples/browser/README.md">browser</a></td>
+      <td>Vanilla HTML/CSS/JS</td>
+      <td>Minimal webview chrome that loads an arbitrary URL into an isolated child WebView</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/zero-native/zero-native/blob/main/examples/next/README.md">next</a></td>
+      <td>Next.js</td>
+      <td>Next.js frontend, Zig native shell, dev server wired through <code>app.zon</code></td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/zero-native/zero-native/blob/main/examples/react/README.md">react</a></td>
+      <td>React + Vite</td>
+      <td>React SPA built with Vite, served from <code>frontend/dist</code></td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/zero-native/zero-native/blob/main/examples/svelte/README.md">svelte</a></td>
+      <td>Svelte + Vite</td>
+      <td>Svelte SPA built with Vite, served from <code>frontend/dist</code></td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/zero-native/zero-native/blob/main/examples/vue/README.md">vue</a></td>
+      <td>Vue + Vite</td>
+      <td>Vue SPA built with Vite, served from <code>frontend/dist</code></td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/zero-native/zero-native/blob/main/examples/webview/README.md">webview</a></td>
+      <td>Pure Zig + inline HTML</td>
+      <td>Multi-window webview with a native <code>native.ping</code> bridge command</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/zero-native/zero-native/blob/main/examples/android/README.md">android</a></td>
+      <td>Android (Kotlin/JNI)</td>
+      <td>Android host app that embeds the zero-native static library through JNI</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/zero-native/zero-native/blob/main/examples/ios/README.md">ios</a></td>
+      <td>iOS (Swift)</td>
+      <td>iOS host app that embeds the zero-native static library from Swift</td>
+    </tr>
+  </tbody>
+</table>
+
+The `hello` and `webview` examples are the most useful starting points for understanding the framework; the `next`, `react`, `svelte`, and `vue` examples show how to wire a Vite-based or Next-based frontend into the native shell; the `android` and `ios` examples show how to host the framework on mobile.
+
+## Run an example
+
+Each example is a self-contained Zig project. From the example's directory:
+
+```bash
+cd examples/hello
+zig build run
+```
+
+The first run downloads frontend dependencies and builds the native shell. Subsequent runs are cached.
+
+## Create your own
+
+The fastest way to start a new project is the `init` command, which scaffolds a fresh `app.zon`, `build.zig`, `src/main.zig`, and (optionally) a frontend:
+
+```bash
+npx zero-native init my-app --frontend <vite|react|svelte|vue|next>
+```
+
+After scaffolding, `cd my-app && zig build run` builds and launches the app. `zig build dev` starts the frontend's dev server and points the WebView at it. See [CLI Reference](/cli) for the full option list and [Quick Start](/quick-start) for the end-to-end walkthrough.
+
+## See also
+
+- [Quick Start](/quick-start) -- build, run, and package your first app
+- [App Model](/app-model) -- how the runtime, frontend, and bridge fit together
+- [Frontend Projects](/frontend) -- per-framework packaging details
+- [Bridge](/bridge) -- how the WebView calls into native Zig

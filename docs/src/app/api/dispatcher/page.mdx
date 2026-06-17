@@ -1,0 +1,84 @@
+# API Reference: Dispatcher
+
+`Dispatcher` is the entry point for bridge requests that arrive from the WebView. It owns a `Policy`, a `Registry` of synchronous handlers, and an `AsyncRegistry` of asynchronous handlers. Each request is parsed, checked against the policy, routed to the right handler, and converted into a JSON response. The conceptual overview lives in [Bridge](/bridge).
+
+## Request and source
+
+```zig
+pub const Request = struct {
+    id: []const u8,       // echoed back in the response
+    command: []const u8,  // up to max_command_bytes
+    payload: []const u8 = "null",  // raw JSON value
+};
+
+pub const Source = struct {
+    origin: []const u8 = "",
+    window_id: u64 = 1,
+    webview_label: []const u8 = "main",
+};
+```
+
+A handler always receives an `Invocation { request, source }` so it can see both caller-supplied fields and provenance.
+
+## Policy
+
+```zig
+pub const CommandPolicy = struct {
+    name: []const u8,
+    permissions: []const []const u8 = &.{},
+    origins: []const []const u8 = &.{},  // empty = any origin
+};
+
+pub const Policy = struct {
+    enabled: bool = false,
+    permissions: []const []const u8 = &.{},
+    commands: []const CommandPolicy = &.{},
+    pub fn allows(self: Policy, command: []const u8, origin: []const u8) bool;
+};
+```
+
+`Policy.allows` returns `false` when the bridge is disabled, when no entry matches, or when the origin is not in the allow list (`*` is accepted as a wildcard).
+
+## Handler signatures
+
+```zig
+pub const HandlerFn = *const fn (
+    context: *anyopaque, invocation: Invocation, output: []u8,
+) anyerror![]const u8;
+
+pub const AsyncHandlerFn = *const fn (
+    context: *anyopaque, invocation: Invocation, responder: AsyncResponder,
+) anyerror!void;
+```
+
+Sync handlers return a JSON result slice (often into `output`); async handlers receive an `AsyncResponder` and call it later from any thread.
+
+## AsyncResponder
+
+```zig
+pub const AsyncResponder = struct {
+    pub fn respond(self: AsyncResponder, response: []const u8) anyerror!void;
+    pub fn success(self: AsyncResponder, id: []const u8, result: []const u8) anyerror!void;
+    pub fn fail(self: AsyncResponder, id: []const u8, code: ErrorCode, message: []const u8) anyerror!void;
+};
+```
+
+`respond` sends a complete JSON envelope. `success` formats `{"ok":true,"id":..,"result":..}`. `fail` formats `{"ok":false,"id":..,"error":{"code":..,"message":..}}`.
+
+## Dispatcher
+
+```zig
+pub const Dispatcher = struct {
+    policy: Policy = .{},
+    registry: Registry = .{},
+    async_registry: AsyncRegistry = .{},
+
+    pub fn dispatch(
+        self: Dispatcher, raw: []const u8, source: Source, output: []u8,
+    ) []const u8;
+};
+```
+
+`dispatch` parses `raw`, evaluates the policy, and either invokes the matching async handler (returning an empty `output` slice) or the matching sync handler (returning the serialized success or error envelope). The returned slice points into `output`.
+
+See also: [Bridge](/bridge), [Builtin Commands](/bridge/builtin-commands), [Type-Safe IPC](/bridge/codegen).

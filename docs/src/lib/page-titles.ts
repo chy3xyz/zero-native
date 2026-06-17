@@ -1,6 +1,7 @@
 export const PAGE_TITLES: Record<string, string> = {
   "": "Build Desktop Apps\nwith Zig + WebView",
   "quick-start": "Quick Start",
+  examples: "Examples",
   "app-model": "App Model",
   frontend: "Frontend Projects",
   windows: "Windows",
@@ -40,6 +41,13 @@ export const PAGE_TITLES: Record<string, string> = {
   embed: "Embedded App",
   "web-engines": "Web Engines",
   packages: "Package Distribution",
+  "api/runtime": "API: Runtime",
+  "api/dispatcher": "API: Dispatcher",
+  "api/channel": "API: Channel",
+  "api/metadata": "API: Metadata",
+  "api/capability": "API: Capability",
+  "api/module-registry": "API: ModuleRegistry",
+  "api/sandbox": "API: Sandbox",
 };
 
 export function getPageTitle(slug: string): string | null {

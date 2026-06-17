@@ -1,0 +1,74 @@
+# API Reference: Capability
+
+A `Capability` is a named, window-scoped bundle of permissions. Each permission carries a `ScopeSet` of allow/deny globs that the runtime resolves against `$`-prefixed variables. The high-level model is described in [Capabilities](/capabilities).
+
+## Capability
+
+```zig
+pub const Capability = struct {
+    identifier: []const u8,
+    description: []const u8 = "",
+    windows: []const []const u8,
+    permissions: []const Permission = &.{},
+
+    pub fn deinit(self: *Capability, allocator: std.mem.Allocator) void;
+};
+```
+
+`windows` lists the labels the capability applies to. Use `"*"` as a catch-all. An exact label match always wins over `"*"`.
+
+## Permission and scope
+
+```zig
+pub const Permission = struct {
+    identifier: []const u8,  // e.g. "fs:allow-read-text-file"
+    scopes: ScopeSet = .{},
+};
+
+pub const ScopeSet = struct {
+    allow: []const Scope = &.{},
+    deny: []const Scope = &.{},
+};
+
+pub const Scope = struct { kind: ScopeKind, pattern: []const u8 };
+pub const ScopeKind = enum { path, url };
+```
+
+A `ScopeSet` with no `allow` entries is deny-by-default. A path that matches any `deny` entry is denied even if it also matches an `allow` entry.
+
+## ScopeVars
+
+```zig
+pub const ScopeVars = struct {
+    app: []const u8 = "", appconfig: []const u8 = "", appdata: []const u8 = "",
+    applocaldata: []const u8 = "", applog: []const u8 = "", home: []const u8 = "",
+    temp: []const u8 = "", resource: []const u8 = "",
+};
+```
+
+The runtime populates these with platform-specific paths before matching. Unknown variables expand to the empty string, so `$TEMP/x` becomes `/x` when `temp` is unset.
+
+## Functions
+
+```zig
+pub fn resolveScope(allocator: std.mem.Allocator, pattern: []const u8, vars: ScopeVars) ![]u8;
+pub fn matchGlob(pattern: []const u8, value: []const u8) bool;
+pub fn allowsPath(set: ScopeSet, path: []const u8, vars: ScopeVars) bool;
+```
+
+`resolveScope` substitutes `$`-prefixed variables and returns an allocated string the caller must free. `matchGlob` is a small glob engine: `*` excludes `/`, `**` crosses `/`, `?` matches one non-`/` character. `allowsPath` is the deny-overrides-allow check.
+
+The runtime-facing entry point lives in `security.root.zig`:
+
+```zig
+pub fn allowsCommandForWindow(
+    capabilities: []const capability.Capability,
+    window_label: []const u8,
+    command: []const u8,
+    origin: []const u8,
+) bool;
+```
+
+Returns `true` only when the active window's capability contains a permission whose identifier matches `command` and whose `url` scopes accept `origin`.
+
+See also: [Capabilities](/capabilities), [Security](/security), [Manifest Reference](/manifest).
