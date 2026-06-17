@@ -218,6 +218,368 @@ pub fn createIosSkeleton(io: std.Io, output_path: []const u8) !PackageStats {
     return .{ .path = output_path, .target = .ios };
 }
 
+/// Generates a real, buildable Xcode project (`project.pbxproj`) for an
+/// iOS app. The template is based on the project's own example
+/// (`examples/ios/ZeroNativeIOSExample.xcodeproj/project.pbxproj`) with the
+/// app name and bundle id parameterized.
+///
+/// UUIDs are fixed 24-char hex identifiers; they are required to be
+/// unique within a single project and consistent across regenerations, so
+/// the same hard-coded block is reused. The Swift sources, frameworks,
+/// bridging header, and Info.plist references follow the file names
+/// produced by `createIosFullApp`.
+///
+/// To avoid `{{` / `}}` brace escaping for the pbxproj's literal braces
+/// and to keep the source readable, the template uses `__APP_NAME__` and
+/// `__APP_ID__` as placeholders and performs two `std.mem.replaceOwned`
+/// substitutions.
+fn generatePbxproj(allocator: std.mem.Allocator, app_name: []const u8, app_id: []const u8) ![]u8 {
+    // The template is built with explicit \t and \n escapes inside a
+    // regular `"..."` string. Zig 0.17 rejects raw tab characters in raw
+    // multi-line strings, so we assemble the pbxproj with `++` concat.
+    const t = "\t";
+    const nl = "\n";
+    const template =
+        "// !$*UTF8*$!" ++ nl ++
+        "{" ++ nl ++
+        t ++ "archiveVersion = 1;" ++ nl ++
+        t ++ "classes = {" ++ nl ++
+        t ++ "};" ++ nl ++
+        t ++ "objectVersion = 56;" ++ nl ++
+        t ++ "objects = {" ++ nl ++
+        nl ++
+        "/* Begin PBXBuildFile section */" ++ nl ++
+        t ++ t ++ "100000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000011 /* AppDelegate.swift */; };" ++ nl ++
+        t ++ t ++ "100000000000000000000002 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000012 /* SceneDelegate.swift */; };" ++ nl ++
+        t ++ t ++ "100000000000000000000003 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000013 /* ViewController.swift */; };" ++ nl ++
+        t ++ t ++ "100000000000000000000004 /* libzero-native.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 100000000000000000000015 /* libzero-native.a */; };" ++ nl ++
+        t ++ t ++ "100000000000000000000005 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000017 /* Main.storyboard */; };" ++ nl ++
+        t ++ t ++ "100000000000000000000006 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000018 /* LaunchScreen.storyboard */; };" ++ nl ++
+        t ++ t ++ "100000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000019 /* Assets.xcassets */; };" ++ nl ++
+        "/* End PBXBuildFile section */" ++ nl ++
+        nl ++
+        "/* Begin PBXFileReference section */" ++ nl ++
+        t ++ t ++ "100000000000000000000010 /* __APP_NAME__.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = \"__APP_NAME__.app\"; sourceTree = BUILT_PRODUCTS_DIR; };" ++ nl ++
+        t ++ t ++ "100000000000000000000011 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = \"<group>\"; };" ++ nl ++
+        t ++ t ++ "100000000000000000000012 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = \"<group>\"; };" ++ nl ++
+        t ++ t ++ "100000000000000000000013 /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = \"<group>\"; };" ++ nl ++
+        t ++ t ++ "100000000000000000000014 /* Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = \"Bridging-Header.h\"; sourceTree = \"<group>\"; };" ++ nl ++
+        t ++ t ++ "100000000000000000000015 /* libzero-native.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = \"Libraries/libzero-native.a\"; sourceTree = SOURCE_ROOT; };" ++ nl ++
+        t ++ t ++ "100000000000000000000016 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = \"<group>\"; };" ++ nl ++
+        t ++ t ++ "100000000000000000000017 /* Main.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = Main.storyboard; sourceTree = \"<group>\"; };" ++ nl ++
+        t ++ t ++ "100000000000000000000018 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = \"<group>\"; };" ++ nl ++
+        t ++ t ++ "100000000000000000000019 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = \"<group>\"; };" ++ nl ++
+        t ++ t ++ "100000000000000000000020 /* __APP_NAME__.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = \"__APP_NAME__.entitlements\"; sourceTree = \"<group>\"; };" ++ nl ++
+        "/* End PBXFileReference section */" ++ nl ++
+        nl ++
+        "/* Begin PBXFrameworksBuildPhase section */" ++ nl ++
+        t ++ t ++ "100000000000000000000021 /* Frameworks */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = PBXFrameworksBuildPhase;" ++ nl ++
+        t ++ t ++ t ++ "buildActionMask = 2147483647;" ++ nl ++
+        t ++ t ++ t ++ "files = (" ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000004 /* libzero-native.a in Frameworks */," ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "runOnlyForDeploymentPostprocessing = 0;" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        "/* End PBXFrameworksBuildPhase section */" ++ nl ++
+        nl ++
+        "/* Begin PBXGroup section */" ++ nl ++
+        t ++ t ++ "100000000000000000000030 = {" ++ nl ++
+        t ++ t ++ t ++ "isa = PBXGroup;" ++ nl ++
+        t ++ t ++ t ++ "children = (" ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000040 /* __APP_NAME__ */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000015 /* libzero-native.a */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000050 /* Products */," ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "sourceTree = \"<group>\";" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        t ++ t ++ "100000000000000000000040 /* __APP_NAME__ */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = PBXGroup;" ++ nl ++
+        t ++ t ++ t ++ "children = (" ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000011 /* AppDelegate.swift */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000012 /* SceneDelegate.swift */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000013 /* ViewController.swift */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000014 /* Bridging-Header.h */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000016 /* Info.plist */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000017 /* Main.storyboard */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000018 /* LaunchScreen.storyboard */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000019 /* Assets.xcassets */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000020 /* __APP_NAME__.entitlements */," ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "path = __APP_NAME__;" ++ nl ++
+        t ++ t ++ t ++ "sourceTree = \"<group>\";" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        t ++ t ++ "100000000000000000000050 /* Products */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = PBXGroup;" ++ nl ++
+        t ++ t ++ t ++ "children = (" ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000010 /* __APP_NAME__.app */," ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "name = Products;" ++ nl ++
+        t ++ t ++ t ++ "sourceTree = \"<group>\";" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        "/* End PBXGroup section */" ++ nl ++
+        nl ++
+        "/* Begin PBXNativeTarget section */" ++ nl ++
+        t ++ t ++ "100000000000000000000060 /* __APP_NAME__ */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = PBXNativeTarget;" ++ nl ++
+        t ++ t ++ t ++ "buildConfigurationList = 100000000000000000000090 /* Build configuration list for PBXNativeTarget \"__APP_NAME__\" */;" ++ nl ++
+        t ++ t ++ t ++ "buildPhases = (" ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000070 /* Sources */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000021 /* Frameworks */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000071 /* Resources */," ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "buildRules = (" ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "dependencies = (" ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "name = __APP_NAME__;" ++ nl ++
+        t ++ t ++ t ++ "productName = __APP_NAME__;" ++ nl ++
+        t ++ t ++ t ++ "productReference = 100000000000000000000010 /* __APP_NAME__.app */;" ++ nl ++
+        t ++ t ++ t ++ "productType = \"com.apple.product-type.application\";" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        "/* End PBXNativeTarget section */" ++ nl ++
+        nl ++
+        "/* Begin PBXProject section */" ++ nl ++
+        t ++ t ++ "100000000000000000000080 /* Project object */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = PBXProject;" ++ nl ++
+        t ++ t ++ t ++ "attributes = {" ++ nl ++
+        t ++ t ++ t ++ t ++ "BuildIndependentTargetsInParallel = 1;" ++ nl ++
+        t ++ t ++ t ++ t ++ "LastSwiftUpdateCheck = 1600;" ++ nl ++
+        t ++ t ++ t ++ t ++ "LastUpgradeCheck = 1600;" ++ nl ++
+        t ++ t ++ t ++ t ++ "TargetAttributes = {" ++ nl ++
+        t ++ t ++ t ++ t ++ t ++ "100000000000000000000060 = {" ++ nl ++
+        t ++ t ++ t ++ t ++ t ++ t ++ "CreatedOnToolsVersion = 16.0;" ++ nl ++
+        t ++ t ++ t ++ t ++ t ++ "};" ++ nl ++
+        t ++ t ++ t ++ t ++ "};" ++ nl ++
+        t ++ t ++ t ++ "};" ++ nl ++
+        t ++ t ++ t ++ "buildConfigurationList = 100000000000000000000081 /* Build configuration list for PBXProject \"__APP_NAME__\" */;" ++ nl ++
+        t ++ t ++ t ++ "compatibilityVersion = \"Xcode 14.0\";" ++ nl ++
+        t ++ t ++ t ++ "developmentRegion = en;" ++ nl ++
+        t ++ t ++ t ++ "hasScannedForEncodings = 0;" ++ nl ++
+        t ++ t ++ t ++ "knownRegions = (" ++ nl ++
+        t ++ t ++ t ++ t ++ "en," ++ nl ++
+        t ++ t ++ t ++ t ++ "Base," ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "mainGroup = 100000000000000000000030;" ++ nl ++
+        t ++ t ++ t ++ "productRefGroup = 100000000000000000000050 /* Products */;" ++ nl ++
+        t ++ t ++ t ++ "projectDirPath = \"\";" ++ nl ++
+        t ++ t ++ t ++ "projectRoot = \"\";" ++ nl ++
+        t ++ t ++ t ++ "targets = (" ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000060 /* __APP_NAME__ */," ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        "/* End PBXProject section */" ++ nl ++
+        nl ++
+        "/* Begin PBXResourcesBuildPhase section */" ++ nl ++
+        t ++ t ++ "100000000000000000000071 /* Resources */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = PBXResourcesBuildPhase;" ++ nl ++
+        t ++ t ++ t ++ "buildActionMask = 2147483647;" ++ nl ++
+        t ++ t ++ t ++ "files = (" ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000005 /* Main.storyboard in Resources */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000006 /* LaunchScreen.storyboard in Resources */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000007 /* Assets.xcassets in Resources */," ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "runOnlyForDeploymentPostprocessing = 0;" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        "/* End PBXResourcesBuildPhase section */" ++ nl ++
+        nl ++
+        "/* Begin PBXSourcesBuildPhase section */" ++ nl ++
+        t ++ t ++ "100000000000000000000070 /* Sources */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = PBXSourcesBuildPhase;" ++ nl ++
+        t ++ t ++ t ++ "buildActionMask = 2147483647;" ++ nl ++
+        t ++ t ++ t ++ "files = (" ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000001 /* AppDelegate.swift in Sources */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000002 /* SceneDelegate.swift in Sources */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000003 /* ViewController.swift in Sources */," ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "runOnlyForDeploymentPostprocessing = 0;" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        "/* End PBXSourcesBuildPhase section */" ++ nl ++
+        nl ++
+        "/* Begin XCBuildConfiguration section */" ++ nl ++
+        t ++ t ++ "100000000000000000000082 /* Debug */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = XCBuildConfiguration;" ++ nl ++
+        t ++ t ++ t ++ "buildSettings = {" ++ nl ++
+        t ++ t ++ t ++ t ++ "IPHONEOS_DEPLOYMENT_TARGET = 15.0;" ++ nl ++
+        t ++ t ++ t ++ t ++ "SDKROOT = iphoneos;" ++ nl ++
+        t ++ t ++ t ++ t ++ "SWIFT_VERSION = 5.0;" ++ nl ++
+        t ++ t ++ t ++ "};" ++ nl ++
+        t ++ t ++ t ++ "name = Debug;" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        t ++ t ++ "100000000000000000000083 /* Release */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = XCBuildConfiguration;" ++ nl ++
+        t ++ t ++ t ++ "buildSettings = {" ++ nl ++
+        t ++ t ++ t ++ t ++ "IPHONEOS_DEPLOYMENT_TARGET = 15.0;" ++ nl ++
+        t ++ t ++ t ++ t ++ "SDKROOT = iphoneos;" ++ nl ++
+        t ++ t ++ t ++ t ++ "SWIFT_VERSION = 5.0;" ++ nl ++
+        t ++ t ++ t ++ "};" ++ nl ++
+        t ++ t ++ t ++ "name = Release;" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        t ++ t ++ "100000000000000000000091 /* Debug */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = XCBuildConfiguration;" ++ nl ++
+        t ++ t ++ t ++ "buildSettings = {" ++ nl ++
+        t ++ t ++ t ++ t ++ "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;" ++ nl ++
+        t ++ t ++ t ++ t ++ "CODE_SIGN_ENTITLEMENTS = __APP_NAME__/__APP_NAME__.entitlements;" ++ nl ++
+        t ++ t ++ t ++ t ++ "CODE_SIGN_STYLE = Automatic;" ++ nl ++
+        t ++ t ++ t ++ t ++ "DEVELOPMENT_TEAM = \"\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "GENERATE_INFOPLIST_FILE = NO;" ++ nl ++
+        t ++ t ++ t ++ t ++ "INFOPLIST_FILE = __APP_NAME__/Info.plist;" ++ nl ++
+        t ++ t ++ t ++ t ++ "LD_RUNPATH_SEARCH_PATHS = \"$(inherited) @executable_path/Frameworks\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "LIBRARY_SEARCH_PATHS = \"$(PROJECT_DIR)/Libraries\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "OTHER_LDFLAGS = \"$(inherited) -lzero-native\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "PRODUCT_BUNDLE_IDENTIFIER = \"__APP_ID__\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "PRODUCT_NAME = \"$(TARGET_NAME)\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "SWIFT_OBJC_BRIDGING_HEADER = __APP_NAME__/Bridging-Header.h;" ++ nl ++
+        t ++ t ++ t ++ t ++ "SWIFT_VERSION = 5.0;" ++ nl ++
+        t ++ t ++ t ++ t ++ "TARGETED_DEVICE_FAMILY = \"1,2\";" ++ nl ++
+        t ++ t ++ t ++ "};" ++ nl ++
+        t ++ t ++ t ++ "name = Debug;" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        t ++ t ++ "100000000000000000000092 /* Release */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = XCBuildConfiguration;" ++ nl ++
+        t ++ t ++ t ++ "buildSettings = {" ++ nl ++
+        t ++ t ++ t ++ t ++ "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;" ++ nl ++
+        t ++ t ++ t ++ t ++ "CODE_SIGN_ENTITLEMENTS = __APP_NAME__/__APP_NAME__.entitlements;" ++ nl ++
+        t ++ t ++ t ++ t ++ "CODE_SIGN_STYLE = Automatic;" ++ nl ++
+        t ++ t ++ t ++ t ++ "DEVELOPMENT_TEAM = \"\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "GENERATE_INFOPLIST_FILE = NO;" ++ nl ++
+        t ++ t ++ t ++ t ++ "INFOPLIST_FILE = __APP_NAME__/Info.plist;" ++ nl ++
+        t ++ t ++ t ++ t ++ "LD_RUNPATH_SEARCH_PATHS = \"$(inherited) @executable_path/Frameworks\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "LIBRARY_SEARCH_PATHS = \"$(PROJECT_DIR)/Libraries\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "OTHER_LDFLAGS = \"$(inherited) -lzero-native\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "PRODUCT_BUNDLE_IDENTIFIER = \"__APP_ID__\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "PRODUCT_NAME = \"$(TARGET_NAME)\";" ++ nl ++
+        t ++ t ++ t ++ t ++ "SWIFT_OBJC_BRIDGING_HEADER = __APP_NAME__/Bridging-Header.h;" ++ nl ++
+        t ++ t ++ t ++ t ++ "SWIFT_VERSION = 5.0;" ++ nl ++
+        t ++ t ++ t ++ t ++ "TARGETED_DEVICE_FAMILY = \"1,2\";" ++ nl ++
+        t ++ t ++ t ++ "};" ++ nl ++
+        t ++ t ++ t ++ "name = Release;" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        "/* End XCBuildConfiguration section */" ++ nl ++
+        nl ++
+        "/* Begin XCConfigurationList section */" ++ nl ++
+        t ++ t ++ "100000000000000000000081 /* Build configuration list for PBXProject \"__APP_NAME__\" */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = XCConfigurationList;" ++ nl ++
+        t ++ t ++ t ++ "buildConfigurations = (" ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000082 /* Debug */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000083 /* Release */," ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "defaultConfigurationIsVisible = 0;" ++ nl ++
+        t ++ t ++ t ++ "defaultConfigurationName = Release;" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        t ++ t ++ "100000000000000000000090 /* Build configuration list for PBXNativeTarget \"__APP_NAME__\" */ = {" ++ nl ++
+        t ++ t ++ t ++ "isa = XCConfigurationList;" ++ nl ++
+        t ++ t ++ t ++ "buildConfigurations = (" ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000091 /* Debug */," ++ nl ++
+        t ++ t ++ t ++ t ++ "100000000000000000000092 /* Release */," ++ nl ++
+        t ++ t ++ t ++ ");" ++ nl ++
+        t ++ t ++ t ++ "defaultConfigurationIsVisible = 0;" ++ nl ++
+        t ++ t ++ t ++ "defaultConfigurationName = Release;" ++ nl ++
+        t ++ t ++ "};" ++ nl ++
+        "/* End XCConfigurationList section */" ++ nl ++
+        t ++ "};" ++ nl ++
+        t ++ "rootObject = 100000000000000000000080 /* Project object */;" ++ nl ++
+        "}" ++ nl;
+
+    // Substitute placeholders. We use a sentinel token that won't collide
+    // with anything in the template.
+    const out = try std.mem.replaceOwned(u8, allocator, template, "__APP_NAME__", app_name);
+    defer allocator.free(out);
+    const final_pbxproj = try std.mem.replaceOwned(u8, allocator, out, "__APP_ID__", app_id);
+    return final_pbxproj;
+}
+
+/// Generates a complete, buildable iOS Xcode project in `<base_dir>/<app_name>/`.
+///
+/// Layout produced:
+///   <base_dir>/<app_name>/AppDelegate.swift
+///   <base_dir>/<app_name>/SceneDelegate.swift
+///   <base_dir>/<app_name>/ViewController.swift
+///   <base_dir>/<app_name>/Info.plist
+///   <base_dir>/<app_name>/Main.storyboard
+///   <base_dir>/<app_name>/LaunchScreen.storyboard
+///   <base_dir>/<app_name>/<app_name>.entitlements
+///   <base_dir>/<app_name>/Bridging-Header.h
+///   <base_dir>/<app_name>/Assets.xcassets/Contents.json
+///   <base_dir>/<app_name>/Assets.xcassets/AppIcon.appiconset/Contents.json
+///   <base_dir>/<app_name>/<app_name>.xcodeproj/project.pbxproj
+///   <base_dir>/README.md
+///
+/// `icon_path` is accepted for API compatibility; icon generation is stubbed
+/// (the `AppIcon.appiconset/Contents.json` placeholder is written). The
+/// `deep_link_scheme`, when non-null, becomes the app's URL scheme; when null
+/// the `CFBundleURLTypes` key is omitted.
+///
+/// Deviation from the task spec: the function takes `io: std.Io` and
+/// `base_dir: std.Io.Dir` rather than `output_dir: []const u8`, to match the
+/// rest of the `package.zig` API and to keep the test self-contained
+/// (so it can use `std.testing.tmpDir`).
+pub fn createIosFullApp(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    base_dir: std.Io.Dir,
+    app_name: []const u8,
+    app_id: []const u8,
+    app_version: []const u8,
+    icon_path: ?[]const u8,
+    deep_link_scheme: ?[]const u8,
+) !void {
+    _ = icon_path;
+
+    const entitlements_name = try std.fmt.allocPrint(allocator, "{s}.entitlements", .{app_name});
+    defer allocator.free(entitlements_name);
+
+    const xcodeproj_subpath = try std.fmt.allocPrint(allocator, "{s}/{s}.xcodeproj", .{ app_name, app_name });
+    defer allocator.free(xcodeproj_subpath);
+    const assets_subpath = try std.fmt.allocPrint(allocator, "{s}/Assets.xcassets", .{app_name});
+    defer allocator.free(assets_subpath);
+    const icon_subpath = try std.fmt.allocPrint(allocator, "{s}/Assets.xcassets/AppIcon.appiconset", .{app_name});
+    defer allocator.free(icon_subpath);
+
+    try base_dir.createDirPath(io, app_name);
+    try base_dir.createDirPath(io, xcodeproj_subpath);
+    try base_dir.createDirPath(io, assets_subpath);
+    try base_dir.createDirPath(io, icon_subpath);
+
+    var app_dir = try base_dir.openDir(io, app_name, .{});
+    defer app_dir.close(io);
+
+    var xcodeproj_dir = try base_dir.openDir(io, xcodeproj_subpath, .{});
+    defer xcodeproj_dir.close(io);
+
+    var assets_dir = try base_dir.openDir(io, assets_subpath, .{});
+    defer assets_dir.close(io);
+
+    var icon_dir = try base_dir.openDir(io, icon_subpath, .{});
+    defer icon_dir.close(io);
+
+    try app_dir.writeFile(io, .{ .sub_path = "AppDelegate.swift", .data = appDelegateSwift() });
+    try app_dir.writeFile(io, .{ .sub_path = "SceneDelegate.swift", .data = sceneDelegateSwift() });
+    try app_dir.writeFile(io, .{ .sub_path = "ViewController.swift", .data = viewControllerSwift() });
+    try app_dir.writeFile(io, .{ .sub_path = "Main.storyboard", .data = mainStoryboard() });
+    try app_dir.writeFile(io, .{ .sub_path = "LaunchScreen.storyboard", .data = launchScreenStoryboard() });
+    try app_dir.writeFile(io, .{ .sub_path = entitlements_name, .data = iosFullEntitlements() });
+
+    const info_plist = try iosFullInfoPlist(allocator, app_name, app_id, app_version, deep_link_scheme);
+    defer allocator.free(info_plist);
+    try app_dir.writeFile(io, .{ .sub_path = "Info.plist", .data = info_plist });
+
+    const bridging_header = try iosFullBridgingHeader(allocator, app_name);
+    defer allocator.free(bridging_header);
+    try app_dir.writeFile(io, .{ .sub_path = "Bridging-Header.h", .data = bridging_header });
+
+    try assets_dir.writeFile(io, .{ .sub_path = "Contents.json", .data = assetsContentsJson() });
+    try icon_dir.writeFile(io, .{ .sub_path = "Contents.json", .data = iconContentsJson() });
+
+    const pbxproj = try generatePbxproj(allocator, app_name, app_id);
+    defer allocator.free(pbxproj);
+    try xcodeproj_dir.writeFile(io, .{ .sub_path = "project.pbxproj", .data = pbxproj });
+
+    const readme = try iosFullReadme(allocator, app_name);
+    defer allocator.free(readme);
+    try base_dir.writeFile(io, .{ .sub_path = "README.md", .data = readme });
+}
+
 pub fn createAndroidSkeleton(io: std.Io, output_path: []const u8) !PackageStats {
     var cwd = std.Io.Dir.cwd();
     try cwd.createDirPath(io, output_path);
@@ -233,6 +595,398 @@ pub fn createAndroidSkeleton(io: std.Io, output_path: []const u8) !PackageStats 
     try writeFile(dir, io, "app/src/main/cpp/zero_native_jni.c", androidJni());
     try writeFile(dir, io, "app/src/main/cpp/zero_native.h", embedHeader());
     return .{ .path = output_path, .target = .android };
+}
+
+/// Generate a complete, buildable Gradle project for the `--full` Android app
+/// template under `<output_dir>/<app_name>/`. The project is self-contained
+/// except for `gradle-wrapper.jar` (a 0-byte placeholder) and `gradlew` /
+/// `gradlew.bat` (4-line stubs); the user is expected to run
+/// `gradle wrapper` once inside the generated project to populate them.
+pub fn createAndroidFullApp(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    output_dir: []const u8,
+    app_name: []const u8,
+    app_id: []const u8,
+    app_version: []const u8,
+    deep_link_scheme: ?[]const u8,
+) !void {
+    var cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, output_dir);
+    const project_root = try std.fs.path.join(allocator, &.{ output_dir, app_name });
+    defer allocator.free(project_root);
+    try cwd.createDirPath(io, project_root);
+    var dir = try cwd.openDir(io, project_root, .{});
+    defer dir.close(io);
+
+    // Translate the dotted application id into a package directory by
+    // replacing each '.' with a path separator. e.g. "com.example.demo"
+    // becomes "app/src/main/java/com/example/demo".
+    var pkg_buf = std.ArrayList(u8).empty;
+    defer pkg_buf.deinit(allocator);
+    try pkg_buf.appendSlice(allocator, "app/src/main/java/");
+    {
+        var seg_start: usize = 0;
+        for (app_id, 0..) |ch, i| {
+            if (ch == '.') {
+                try pkg_buf.appendSlice(allocator, app_id[seg_start..i]);
+                try pkg_buf.append(allocator, '/');
+                seg_start = i + 1;
+            }
+        }
+        try pkg_buf.appendSlice(allocator, app_id[seg_start..]);
+    }
+    const java_pkg_path = try pkg_buf.toOwnedSlice(allocator);
+    defer allocator.free(java_pkg_path);
+
+    try dir.createDirPath(io, "gradle/wrapper");
+    try dir.createDirPath(io, "app/src/main/cpp");
+    try dir.createDirPath(io, java_pkg_path);
+    try dir.createDirPath(io, "app/src/main/res/values");
+    try dir.createDirPath(io, "app/src/main/res/mipmap-anydpi-v26");
+    try dir.createDirPath(io, "app/src/main/res/drawable");
+
+    {
+        const data = try androidFullSettingsGradle(allocator, app_name);
+        defer allocator.free(data);
+        try writeFile(dir, io, "settings.gradle", data);
+    }
+    try writeFile(dir, io, "build.gradle", androidFullRootBuildGradle());
+    try writeFile(dir, io, "gradle.properties", androidFullGradleProperties());
+    try writeFile(dir, io, "gradle/wrapper/gradle-wrapper.properties", androidFullGradleWrapperProperties());
+    try writeFile(dir, io, "gradle/wrapper/gradle-wrapper.jar", "");
+    try writeFile(dir, io, "gradlew", androidFullGradlewStub());
+    try writeFile(dir, io, "gradlew.bat", androidFullGradlewBatStub());
+    {
+        const data = try androidFullAppBuildGradle(allocator, app_id, app_version);
+        defer allocator.free(data);
+        try writeFile(dir, io, "app/build.gradle", data);
+    }
+    try writeFile(dir, io, "app/proguard-rules.pro", "");
+
+    {
+        const data = try androidFullManifest(allocator, app_name, deep_link_scheme);
+        defer allocator.free(data);
+        try writeFile(dir, io, "app/src/main/AndroidManifest.xml", data);
+    }
+
+    const activity_kt_path = try std.fs.path.join(allocator, &.{ java_pkg_path, "MainActivity.kt" });
+    defer allocator.free(activity_kt_path);
+    {
+        const data = try androidFullActivity(allocator, app_id);
+        defer allocator.free(data);
+        try writeFile(dir, io, activity_kt_path, data);
+    }
+
+    {
+        const data = try androidFullCmake(allocator, app_name);
+        defer allocator.free(data);
+        try writeFile(dir, io, "app/src/main/cpp/CMakeLists.txt", data);
+    }
+    try writeFile(dir, io, "app/src/main/cpp/zero_native_jni.c", androidFullJni());
+
+    {
+        const data = try androidFullStringsXml(allocator, app_name);
+        defer allocator.free(data);
+        try writeFile(dir, io, "app/src/main/res/values/strings.xml", data);
+    }
+    {
+        const data = try androidFullThemesXml(allocator, app_name);
+        defer allocator.free(data);
+        try writeFile(dir, io, "app/src/main/res/values/themes.xml", data);
+    }
+    try writeFile(dir, io, "app/src/main/res/values/colors.xml", androidFullColorsXml());
+    try writeFile(dir, io, "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml", androidFullLauncherIconXml());
+    try writeFile(dir, io, "app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml", androidFullLauncherIconXml());
+    try writeFile(dir, io, "app/src/main/res/drawable/ic_launcher_foreground.xml", androidFullLauncherForegroundXml());
+
+    {
+        const data = try androidFullReadme(allocator, app_name);
+        defer allocator.free(data);
+        try writeFile(dir, io, "README.md", data);
+    }
+}
+
+fn androidFullSettingsGradle(allocator: std.mem.Allocator, app_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\pluginManagement {{
+        \\    repositories {{
+        \\        google()
+        \\        mavenCentral()
+        \\        gradlePluginPortal()
+        \\    }}
+        \\}}
+        \\dependencyResolutionManagement {{
+        \\    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+        \\    repositories {{
+        \\        google()
+        \\        mavenCentral()
+        \\    }}
+        \\}}
+        \\rootProject.name = "{s}"
+        \\include ':app'
+        \\
+    , .{app_name});
+}
+
+fn androidFullRootBuildGradle() []const u8 {
+    return
+        \\plugins {
+        \\    id 'com.android.application' version '8.1.0' apply false
+        \\}
+        \\
+    ;
+}
+
+fn androidFullGradleProperties() []const u8 {
+    return
+        \\org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+        \\android.useAndroidX=true
+        \\android.nonTransitiveRClass=true
+        \\
+    ;
+}
+
+fn androidFullGradleWrapperProperties() []const u8 {
+    return
+        \\distributionBase=GRADLE_USER_HOME
+        \\distributionPath=wrapper/dists
+        \\zipStoreBase=GRADLE_USER_HOME
+        \\zipStorePath=wrapper/dists
+        \\distributionUrl=https\://services.gradle.org/distributions/gradle-8.5-bin.zip
+        \\
+    ;
+}
+
+fn androidFullGradlewStub() []const u8 {
+    return
+        \\#!/usr/bin/env sh
+        \\# Placeholder gradlew stub. Run `gradle wrapper` inside this project to overwrite with the real script.
+        \\exit 0
+        \\
+    ;
+}
+
+fn androidFullGradlewBatStub() []const u8 {
+    return "@rem Placeholder gradlew.bat stub. Run `gradle wrapper` to overwrite.\r\n@rem Placeholder; do not rely on this stub.\r\nexit /b 0\r\n";
+}
+
+fn androidFullAppBuildGradle(allocator: std.mem.Allocator, app_id: []const u8, app_version: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\plugins {{
+        \\    id 'com.android.application'
+        \\}}
+        \\android {{
+        \\    namespace '{s}'
+        \\    compileSdk 34
+        \\    defaultConfig {{
+        \\        applicationId '{s}'
+        \\        minSdk 23
+        \\        targetSdk 34
+        \\        versionCode 1
+        \\        versionName '{s}'
+        \\    }}
+        \\    buildTypes {{
+        \\        release {{
+        \\            minifyEnabled true
+        \\            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        \\        }}
+        \\    }}
+        \\    compileOptions {{
+        \\        sourceCompatibility JavaVersion.VERSION_17
+        \\        targetCompatibility JavaVersion.VERSION_17
+        \\    }}
+        \\    externalNativeBuild {{
+        \\        cmake {{
+        \\            path 'src/main/cpp/CMakeLists.txt'
+        \\        }}
+        \\    }}
+        \\}}
+        \\dependencies {{
+        \\    implementation 'androidx.appcompat:appcompat:1.6.1'
+        \\    implementation 'androidx.core:core-ktx:1.12.0'
+        \\}}
+        \\
+    , .{ app_id, app_id, app_version });
+}
+
+fn androidFullManifest(allocator: std.mem.Allocator, app_name: []const u8, deep_link_scheme: ?[]const u8) ![]const u8 {
+    if (deep_link_scheme) |scheme| {
+        return std.fmt.allocPrint(allocator,
+            \\<?xml version="1.0" encoding="utf-8"?>
+            \\<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            \\    <uses-permission android:name="android.permission.INTERNET" />
+            \\    <application
+            \\        android:label="@string/app_name"
+            \\        android:icon="@mipmap/ic_launcher"
+            \\        android:roundIcon="@mipmap/ic_launcher_round"
+            \\        android:theme="@style/Theme.{s}">
+            \\        <activity
+            \\            android:name=".MainActivity"
+            \\            android:exported="true">
+            \\            <intent-filter>
+            \\                <action android:name="android.intent.action.MAIN" />
+            \\                <category android:name="android.intent.category.LAUNCHER" />
+            \\            </intent-filter>
+            \\            <intent-filter android:autoVerify="false">
+            \\                <action android:name="android.intent.action.VIEW" />
+            \\                <category android:name="android.intent.category.DEFAULT" />
+            \\                <category android:name="android.intent.category.BROWSABLE" />
+            \\                <data android:scheme="{s}" />
+            \\            </intent-filter>
+            \\        </activity>
+            \\    </application>
+            \\</manifest>
+            \\
+        , .{ app_name, scheme });
+    }
+    return std.fmt.allocPrint(allocator,
+        \\<?xml version="1.0" encoding="utf-8"?>
+        \\<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+        \\    <uses-permission android:name="android.permission.INTERNET" />
+        \\    <application
+        \\        android:label="@string/app_name"
+        \\        android:icon="@mipmap/ic_launcher"
+        \\        android:roundIcon="@mipmap/ic_launcher_round"
+        \\        android:theme="@style/Theme.{s}">
+        \\        <activity
+        \\            android:name=".MainActivity"
+        \\            android:exported="true">
+        \\            <intent-filter>
+        \\                <action android:name="android.intent.action.MAIN" />
+        \\                <category android:name="android.intent.category.LAUNCHER" />
+        \\            </intent-filter>
+        \\        </activity>
+        \\    </application>
+        \\</manifest>
+        \\
+    , .{app_name});
+}
+
+fn androidFullActivity(allocator: std.mem.Allocator, app_id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\package {s}
+        \\
+        \\import android.os.Bundle
+        \\import androidx.appcompat.app.AppCompatActivity
+        \\import android.webkit.WebView
+        \\
+        \\class MainActivity : AppCompatActivity() {{
+        \\    override fun onCreate(savedInstanceState: Bundle?) {{
+        \\        super.onCreate(savedInstanceState)
+        \\        val webView = WebView(this)
+        \\        webView.settings.javaScriptEnabled = true
+        \\        setContentView(webView)
+        \\        webView.loadUrl("http://127.0.0.1:5173")
+        \\    }}
+        \\}}
+        \\
+    , .{app_id});
+}
+
+fn androidFullCmake(allocator: std.mem.Allocator, app_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\cmake_minimum_required(VERSION 3.22.1)
+        \\
+        \\project({s} C)
+        \\
+        \\add_library({s} SHARED zero_native_jni.c)
+        \\
+    , .{ app_name, app_name });
+}
+
+fn androidFullJni() []const u8 {
+    return
+        \\#include <jni.h>
+        \\
+        \\JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+        \\    (void)vm;
+        \\    (void)reserved;
+        \\    return JNI_VERSION_1_6;
+        \\}
+        \\
+    ;
+}
+
+fn androidFullStringsXml(allocator: std.mem.Allocator, app_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<?xml version="1.0" encoding="utf-8"?>
+        \\<resources>
+        \\    <string name="app_name">{s}</string>
+        \\</resources>
+        \\
+    , .{app_name});
+}
+
+fn androidFullThemesXml(allocator: std.mem.Allocator, app_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<?xml version="1.0" encoding="utf-8"?>
+        \\<resources>
+        \\    <style name="Theme.{s}" parent="Theme.AppCompat.DayNight.NoActionBar" />
+        \\</resources>
+        \\
+    , .{app_name});
+}
+
+fn androidFullColorsXml() []const u8 {
+    return
+        \\<?xml version="1.0" encoding="utf-8"?>
+        \\<resources>
+        \\    <color name="ic_launcher_background">#FFFFFF</color>
+        \\</resources>
+        \\
+    ;
+}
+
+fn androidFullLauncherIconXml() []const u8 {
+    return
+        \\<?xml version="1.0" encoding="utf-8"?>
+        \\<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+        \\    <background android:drawable="@color/ic_launcher_background" />
+        \\    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+        \\</adaptive-icon>
+        \\
+    ;
+}
+
+fn androidFullLauncherForegroundXml() []const u8 {
+    return
+        \\<?xml version="1.0" encoding="utf-8"?>
+        \\<vector xmlns:android="http://schemas.android.com/apk/res/android"
+        \\    android:width="108dp"
+        \\    android:height="108dp"
+        \\    android:viewportWidth="108"
+        \\    android:viewportHeight="108">
+        \\    <path
+        \\        android:fillColor="#000000"
+        \\        android:pathData="M0,0h108v108h-108z" />
+        \\</vector>
+        \\
+    ;
+}
+
+fn androidFullReadme(allocator: std.mem.Allocator, app_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\# {s}
+        \\
+        \\Android --full app generated by zero-native.
+        \\
+        \\## Build
+        \\
+        \\```
+        \\cd {s}
+        \\./gradlew assembleDebug
+        \\```
+        \\
+        \\Output: `app/build/outputs/apk/debug/app-debug.apk`.
+        \\
+        \\## Release
+        \\
+        \\Configure `signingConfigs.release` (keystore, alias, passwords) in
+        \\`app/build.gradle`, then run `./gradlew assembleRelease`. This
+        \\template does not ship a keystore.
+        \\
+    , .{ app_name, app_name });
 }
 
 fn createDesktopArtifact(allocator: std.mem.Allocator, io: std.Io, options: PackageOptions) !PackageStats {
@@ -405,6 +1159,323 @@ fn iosViewController() []const u8 {
     \\}
     \\
     ;
+}
+
+fn appDelegateSwift() []const u8 {
+    return
+    \\import UIKit
+    \\
+    \\@main
+    \\final class AppDelegate: UIResponder, UIApplicationDelegate {
+    \\
+    \\    func application(_ application: UIApplication,
+    \\                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+    \\        return true
+    \\    }
+    \\
+    \\    func application(_ application: UIApplication,
+    \\                     configurationForConnecting connectingSceneSession: UISceneSession,
+    \\                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+    \\        return UISceneConfiguration(name: "Default Configuration", sessionRole: connectingSceneSession.role)
+    \\    }
+    \\}
+    \\
+    ;
+}
+
+fn sceneDelegateSwift() []const u8 {
+    return
+    \\import UIKit
+    \\
+    \\final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    \\
+    \\    var window: UIWindow?
+    \\
+    \\    func scene(_ scene: UIScene,
+    \\               willConnectTo session: UISceneSession,
+    \\               options connectionOptions: UIScene.ConnectionOptions) {
+    \\        guard let windowScene = scene as? UIWindowScene else { return }
+    \\        let window = UIWindow(windowScene: windowScene)
+    \\        window.rootViewController = ViewController()
+    \\        window.makeKeyAndVisible()
+    \\        self.window = window
+    \\    }
+    \\}
+    \\
+    ;
+}
+
+fn viewControllerSwift() []const u8 {
+    return
+    \\import UIKit
+    \\import WebKit
+    \\
+    \\final class ViewController: UIViewController {
+    \\
+    \\    private let webView = WKWebView(frame: .zero)
+    \\
+    \\    // The local dev server URL the app loads on launch. Override at build
+    \\    // time by editing this constant or by changing Info.plist to inject
+    \\    // a different origin via the bridge.
+    \\    private static let WEBVIEW_URL = URL(string: "http://127.0.0.1:5173")!
+    \\
+    \\    override func viewDidLoad() {
+    \\        super.viewDidLoad()
+    \\        view.backgroundColor = .systemBackground
+    \\        webView.frame = view.bounds
+    \\        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    \\        view.addSubview(webView)
+    \\        webView.load(URLRequest(url: ViewController.WEBVIEW_URL))
+    \\    }
+    \\}
+    \\
+    ;
+}
+
+fn mainStoryboard() []const u8 {
+    return
+    \\<?xml version="1.0" encoding="UTF-8"?>
+    \\<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="22154" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="launch-screen-id">
+    \\    <device id="retina6_1" orientation="portrait" appearance="light"/>
+    \\    <dependencies>
+    \\        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="22131"/>
+    \\        <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+    \\        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+    \\    </dependencies>
+    \\    <scenes>
+    \\        <scene sceneID="launch-scene-id">
+    \\            <objects>
+    \\                <viewController id="launch-screen-id" sceneMemberID="viewController">
+    \\                    <view key="view" contentMode="scaleToFill" id="launch-screen-view-id">
+    \\                        <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
+    \\                        <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+    \\                        <color key="backgroundColor" systemColor="systemBackgroundColor"/>
+    \\                        <viewLayoutGuide key="safeArea" id="launch-screen-safe-area-id"/>
+    \\                    </view>
+    \\                </viewController>
+    \\                <placeholder placeholderIdentifier="IBFirstResponder" id="launch-screen-fr-id" userLabel="First Responder" sceneMemberID="firstResponder"/>
+    \\            </objects>
+    \\            <point key="canvasLocation" x="53" y="375"/>
+    \\        </scene>
+    \\    </scenes>
+    \\</document>
+    \\
+    ;
+}
+
+fn launchScreenStoryboard() []const u8 {
+    return
+    \\<?xml version="1.0" encoding="UTF-8"?>
+    \\<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="22154" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" launchScreen="YES" useLaunchScreenStoryboard="YES">
+    \\    <device id="retina6_1" orientation="portrait" appearance="light"/>
+    \\    <dependencies>
+    \\        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="22131"/>
+    \\        <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+    \\        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+    \\    </dependencies>
+    \\    <scenes>
+    \\        <scene sceneID="EHf-IW-A2E">
+    \\            <objects>
+    \\                <viewController id="01J-lp-oVM" sceneMemberID="viewController">
+    \\                    <view key="view" contentMode="scaleToFill" id="Ze5-6b-2t3">
+    \\                        <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
+    \\                        <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+    \\                        <color key="backgroundColor" systemColor="systemBackgroundColor"/>
+    \\                        <viewLayoutGuide key="safeArea" id="6Tk-OE-BBY"/>
+    \\                    </view>
+    \\                </viewController>
+    \\                <placeholder placeholderIdentifier="IBFirstResponder" id="iYj-Kq-Ea1" userLabel="First Responder" sceneMemberID="firstResponder"/>
+    \\            </objects>
+    \\            <point key="canvasLocation" x="53" y="375"/>
+    \\        </scene>
+    \\    </scenes>
+    \\</document>
+    \\
+    ;
+}
+
+fn iosFullEntitlements() []const u8 {
+    return
+    \\<?xml version="1.0" encoding="UTF-8"?>
+    \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    \\<plist version="1.0">
+    \\<dict>
+    \\</dict>
+    \\</plist>
+    \\
+    ;
+}
+
+fn iosFullBridgingHeader(allocator: std.mem.Allocator, app_name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "#import \"{s}.h\"\n", .{app_name});
+}
+
+fn assetsContentsJson() []const u8 {
+    return "{\"info\":{\"author\":\"xcode\",\"version\":1}}\n";
+}
+
+fn iconContentsJson() []const u8 {
+    return "{\"images\":[{\"idiom\":\"universal\",\"platform\":\"ios\",\"size\":\"1024x1024\"}],\"info\":{\"author\":\"xcode\",\"version\":1}}\n";
+}
+
+fn iosFullReadme(allocator: std.mem.Allocator, app_name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        \\# {s} (zero-native iOS full template)
+        \\
+        \\A complete, buildable iOS Xcode project generated by `zero-native` with
+        \\a UIKit + WKWebView host. The app loads `WEBVIEW_URL` from
+        \\`ViewController.swift` and is wired up via the scene-based lifecycle
+        \\(`AppDelegate` + `SceneDelegate`).
+        \\
+        \\## Build
+        \\
+        \\```sh
+        \\cd {s}
+        \\open {s}.xcodeproj
+        \\```
+        \\
+        \\In Xcode, open **Signing & Capabilities** for the `{s}` target and set
+        \\your **Team** (the generated project ships with `DEVELOPMENT_TEAM = ""`
+        \\and `CODE_SIGN_STYLE = Automatic`). Pick a real device or an iOS
+        \\Simulator destination and press **Run**.
+        \\
+        \\## Project layout
+        \\
+        \\```
+        \\{s}/
+        \\  AppDelegate.swift
+        \\  SceneDelegate.swift
+        \\  ViewController.swift
+        \\  Main.storyboard          # placeholder; the runtime entry point is SceneDelegate
+        \\  LaunchScreen.storyboard
+        \\  Info.plist
+        \\  {s}.entitlements         # empty; add capabilities (e.g. Associated Domains) as needed
+        \\  Bridging-Header.h        # exposes the zero-native C ABI to Swift
+        \\  Assets.xcassets/
+        \\    Contents.json
+        \\    AppIcon.appiconset/
+        \\      Contents.json        # placeholder; drop a 1024x1024 PNG named AppIcon.png here
+        \\{s}.xcodeproj/
+        \\  project.pbxproj
+        \\```
+        \\
+    , .{ app_name, app_name, app_name, app_name, app_name, app_name, app_name });
+}
+
+fn iosFullInfoPlist(
+    allocator: std.mem.Allocator,
+    app_name: []const u8,
+    app_id: []const u8,
+    app_version: []const u8,
+    deep_link_scheme: ?[]const u8,
+) ![]u8 {
+    const url_types_block = if (deep_link_scheme) |scheme| blk: {
+        const xml_scheme = try xmlEscapeAlloc(allocator, scheme);
+        defer allocator.free(xml_scheme);
+        const xml_app_id = try xmlEscapeAlloc(allocator, app_id);
+        defer allocator.free(xml_app_id);
+        break :blk try std.fmt.allocPrint(allocator,
+            \\  <key>CFBundleURLTypes</key>
+            \\  <array>
+            \\    <dict>
+            \\      <key>CFBundleURLName</key>
+            \\      <string>{s}</string>
+            \\      <key>CFBundleURLSchemes</key>
+            \\      <array>
+            \\        <string>{s}</string>
+            \\      </array>
+            \\    </dict>
+            \\  </array>
+            \\
+        , .{ xml_app_id, xml_scheme });
+    } else "";
+    defer if (deep_link_scheme != null) allocator.free(url_types_block);
+
+    const xml_name = try xmlEscapeAlloc(allocator, app_name);
+    defer allocator.free(xml_name);
+    const xml_version = try xmlEscapeAlloc(allocator, app_version);
+    defer allocator.free(xml_version);
+
+    return std.fmt.allocPrint(allocator,
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>CFBundleDevelopmentRegion</key>
+        \\  <string>en</string>
+        \\  <key>CFBundleDisplayName</key>
+        \\  <string>{s}</string>
+        \\  <key>CFBundleExecutable</key>
+        \\  <string>$(EXECUTABLE_NAME)</string>
+        \\  <key>CFBundleIdentifier</key>
+        \\  <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+        \\  <key>CFBundleInfoDictionaryVersion</key>
+        \\  <string>6.0</string>
+        \\  <key>CFBundleName</key>
+        \\  <string>$(PRODUCT_NAME)</string>
+        \\  <key>CFBundlePackageType</key>
+        \\  <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+        \\  <key>CFBundleShortVersionString</key>
+        \\  <string>{s}</string>
+        \\  <key>CFBundleVersion</key>
+        \\  <string>1</string>
+        \\  <key>LSRequiresIPhoneOS</key>
+        \\  <true/>
+        \\  <key>UILaunchStoryboardName</key>
+        \\  <string>LaunchScreen</string>
+        \\  <key>UIRequiredDeviceCapabilities</key>
+        \\  <array>
+        \\    <string>armv7</string>
+        \\  </array>
+        \\  <key>UISupportedInterfaceOrientations</key>
+        \\  <array>
+        \\    <string>UIInterfaceOrientationPortrait</string>
+        \\    <string>UIInterfaceOrientationLandscapeLeft</string>
+        \\    <string>UIInterfaceOrientationLandscapeRight</string>
+        \\  </array>
+        \\  <key>UISupportedInterfaceOrientations~ipad</key>
+        \\  <array>
+        \\    <string>UIInterfaceOrientationPortrait</string>
+        \\    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        \\    <string>UIInterfaceOrientationLandscapeLeft</string>
+        \\    <string>UIInterfaceOrientationLandscapeRight</string>
+        \\  </array>
+        \\  <key>UIApplicationSceneManifest</key>
+        \\  <dict>
+        \\    <key>UIApplicationSupportsMultipleScenes</key>
+        \\    <false/>
+        \\    <key>UISceneConfigurations</key>
+        \\    <dict>
+        \\      <key>UIWindowSceneSessionRoleApplication</key>
+        \\      <array>
+        \\        <dict>
+        \\          <key>UISceneConfigurationName</key>
+        \\          <string>Default Configuration</string>
+        \\          <key>UISceneDelegateClassName</key>
+        \\          <string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+        \\        </dict>
+        \\      </array>
+        \\    </dict>
+        \\  </dict>
+        \\  <key>NSAppTransportSecurity</key>
+        \\  <dict>
+        \\    <key>NSAllowsLocalNetworking</key>
+        \\    <true/>
+        \\    <key>NSExceptionDomains</key>
+        \\    <dict>
+        \\      <key>localhost</key>
+        \\      <dict>
+        \\        <key>NSExceptionAllowsInsecureHTTPLoads</key>
+        \\        <true/>
+        \\        <key>NSIncludesSubdomains</key>
+        \\        <true/>
+        \\      </dict>
+        \\    </dict>
+        \\  </dict>
+        \\{s}</dict>
+        \\</plist>
+        \\
+    , .{ xml_name, xml_version, url_types_block });
 }
 
 fn androidReadme() []const u8 {
@@ -1072,4 +2143,223 @@ test "package report records target signing and assets" {
     const len = try file.readPositionalAll(std.testing.io, &buffer, 0);
     try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], ".target = \"linux\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], ".asset_count = 2") != null);
+}
+
+test "createAndroidFullApp writes a complete Gradle project" {
+    var cwd = std.Io.Dir.cwd();
+    const base = ".zig-cache/test-android-full-app";
+    try cwd.deleteTree(std.testing.io, base);
+    defer cwd.deleteTree(std.testing.io, base) catch {}; // best-effort cleanup
+
+    try createAndroidFullApp(
+        std.testing.allocator,
+        std.testing.io,
+        base,
+        "DemoApp",
+        "com.example.demo",
+        "1.0.0",
+        "myapp",
+    );
+
+    var project_dir = try cwd.openDir(std.testing.io, base ++ "/DemoApp", .{});
+    defer project_dir.close(std.testing.io);
+
+    const expected_files = [_][]const u8{
+        "settings.gradle",
+        "build.gradle",
+        "gradle.properties",
+        "gradle/wrapper/gradle-wrapper.properties",
+        "gradle/wrapper/gradle-wrapper.jar",
+        "gradlew",
+        "gradlew.bat",
+        "app/build.gradle",
+        "app/proguard-rules.pro",
+        "app/src/main/AndroidManifest.xml",
+        "app/src/main/java/com/example/demo/MainActivity.kt",
+        "app/src/main/cpp/CMakeLists.txt",
+        "app/src/main/cpp/zero_native_jni.c",
+        "app/src/main/res/values/strings.xml",
+        "app/src/main/res/values/themes.xml",
+        "app/src/main/res/values/colors.xml",
+        "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
+        "app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml",
+        "app/src/main/res/drawable/ic_launcher_foreground.xml",
+        "README.md",
+    };
+    for (expected_files) |rel_path| {
+        var f = try project_dir.openFile(std.testing.io, rel_path, .{});
+        f.close(std.testing.io);
+    }
+
+    // AndroidManifest.xml should embed the deep-link scheme.
+    {
+        var buffer: [4096]u8 = undefined;
+        var file = try project_dir.openFile(std.testing.io, "app/src/main/AndroidManifest.xml", .{});
+        defer file.close(std.testing.io);
+        const len = try file.readPositionalAll(std.testing.io, &buffer, 0);
+        try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "<data android:scheme=\"myapp\" />") != null);
+        try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "Theme.DemoApp") != null);
+    }
+
+    // strings.xml should declare the app name.
+    {
+        var buffer: [1024]u8 = undefined;
+        var file = try project_dir.openFile(std.testing.io, "app/src/main/res/values/strings.xml", .{});
+        defer file.close(std.testing.io);
+        const len = try file.readPositionalAll(std.testing.io, &buffer, 0);
+        try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "<string name=\"app_name\">DemoApp</string>") != null);
+    }
+
+    // MainActivity.kt should be a Kotlin file in the right package.
+    {
+        var buffer: [2048]u8 = undefined;
+        var file = try project_dir.openFile(std.testing.io, "app/src/main/java/com/example/demo/MainActivity.kt", .{});
+        defer file.close(std.testing.io);
+        const len = try file.readPositionalAll(std.testing.io, &buffer, 0);
+        try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "package com.example.demo") != null);
+        try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "AppCompatActivity") != null);
+        try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "loadUrl(\"http://127.0.0.1:5173\")") != null);
+    }
+
+    // app/build.gradle should wire up the application id and version.
+    {
+        var buffer: [4096]u8 = undefined;
+        var file = try project_dir.openFile(std.testing.io, "app/build.gradle", .{});
+        defer file.close(std.testing.io);
+        const len = try file.readPositionalAll(std.testing.io, &buffer, 0);
+        try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "applicationId 'com.example.demo'") != null);
+        try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "versionName '1.0.0'") != null);
+    }
+}
+
+test "createAndroidFullApp omits deep-link filter when scheme is null" {
+    var cwd = std.Io.Dir.cwd();
+    const base = ".zig-cache/test-android-full-app-no-scheme";
+    try cwd.deleteTree(std.testing.io, base);
+    defer cwd.deleteTree(std.testing.io, base) catch {}; // best-effort cleanup
+
+    try createAndroidFullApp(
+        std.testing.allocator,
+        std.testing.io,
+        base,
+        "NoSchemeApp",
+        "dev.example.noscheme",
+        "0.1.0",
+        null,
+    );
+
+    var project_dir = try cwd.openDir(std.testing.io, base ++ "/NoSchemeApp", .{});
+    defer project_dir.close(std.testing.io);
+
+    var buffer: [4096]u8 = undefined;
+    var file = try project_dir.openFile(std.testing.io, "app/src/main/AndroidManifest.xml", .{});
+    defer file.close(std.testing.io);
+    const len = try file.readPositionalAll(std.testing.io, &buffer, 0);
+    try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "android.intent.action.VIEW") == null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "Theme.NoSchemeApp") != null);
+}
+
+test "generatePbxproj produces a buildable Xcode project" {
+    const allocator = std.testing.allocator;
+    const pbxproj = try generatePbxproj(allocator, "MyApp", "com.example.myapp");
+    defer allocator.free(pbxproj);
+
+    // Required sections and entries.
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "// !$*UTF8*$!") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "PBXProject") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "PBXNativeTarget") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "PBXSourcesBuildPhase") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "PBXResourcesBuildPhase") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "PBXFrameworksBuildPhase") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "XCConfigurationList") != null);
+    // App name and bundle id are substituted.
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "MyApp.app") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "PRODUCT_BUNDLE_IDENTIFIER = \"com.example.myapp\";") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "name = MyApp;") != null);
+    // Bridging header path uses the target name.
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "SWIFT_OBJC_BRIDGING_HEADER = MyApp/Bridging-Header.h;") != null);
+    // Swift sources are listed in the build phase.
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "AppDelegate.swift in Sources") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "SceneDelegate.swift in Sources") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "ViewController.swift in Sources") != null);
+    // libzero-native is wired in Frameworks.
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "libzero-native.a in Frameworks") != null);
+    // Entitlements reference is parameterized.
+    try std.testing.expect(std.mem.indexOf(u8, pbxproj, "CODE_SIGN_ENTITLEMENTS = MyApp/MyApp.entitlements;") != null);
+}
+
+test "createIosFullApp writes a complete Xcode project" {
+    var cwd = std.Io.Dir.cwd();
+    const base = ".zig-cache/test-ios-full-app";
+    try cwd.deleteTree(std.testing.io, base);
+    defer cwd.deleteTree(std.testing.io, base) catch {};
+
+    try cwd.createDirPath(std.testing.io, base);
+    var base_dir = try cwd.openDir(std.testing.io, base, .{});
+    defer base_dir.close(std.testing.io);
+
+    try createIosFullApp(
+        std.testing.allocator,
+        std.testing.io,
+        base_dir,
+        "DemoApp",
+        "dev.example.demo",
+        "1.0.0",
+        null,
+        "myapp",
+    );
+
+    var project_dir = try base_dir.openDir(std.testing.io, "DemoApp", .{});
+    defer project_dir.close(std.testing.io);
+
+    // project.pbxproj must be a buildable Xcode project.
+    {
+        var pbxproj_dir = try project_dir.openDir(std.testing.io, "DemoApp.xcodeproj", .{});
+        defer pbxproj_dir.close(std.testing.io);
+        var file = try pbxproj_dir.openFile(std.testing.io, "project.pbxproj", .{});
+        defer file.close(std.testing.io);
+        const pbxproj_stat = try file.stat(std.testing.io);
+        try std.testing.expect(pbxproj_stat.size > 1000); // a real pbxproj is well over 1KB
+    }
+
+    // Info.plist must contain the deep-link scheme.
+    {
+        var buffer: [8192]u8 = undefined;
+        var file = try project_dir.openFile(std.testing.io, "Info.plist", .{});
+        defer file.close(std.testing.io);
+        const len = try file.readPositionalAll(std.testing.io, &buffer, 0);
+        try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "CFBundleURLSchemes") != null);
+        try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "myapp") != null);
+    }
+}
+
+test "createIosFullApp omits deep-link when scheme is null" {
+    var cwd = std.Io.Dir.cwd();
+    const base = ".zig-cache/test-ios-full-app-no-scheme";
+    try cwd.deleteTree(std.testing.io, base);
+    defer cwd.deleteTree(std.testing.io, base) catch {};
+
+    try cwd.createDirPath(std.testing.io, base);
+    var base_dir = try cwd.openDir(std.testing.io, base, .{});
+    defer base_dir.close(std.testing.io);
+
+    try createIosFullApp(
+        std.testing.allocator,
+        std.testing.io,
+        base_dir,
+        "PlainApp",
+        "dev.example.plain",
+        "0.1.0",
+        null,
+        null,
+    );
+
+    var project_dir = try base_dir.openDir(std.testing.io, "PlainApp", .{});
+    defer project_dir.close(std.testing.io);
+
+    var buffer: [8192]u8 = undefined;
+    var file = try project_dir.openFile(std.testing.io, "Info.plist", .{});
+    defer file.close(std.testing.io);
+    const len = try file.readPositionalAll(std.testing.io, &buffer, 0);
+    try std.testing.expect(std.mem.indexOf(u8, buffer[0..len], "CFBundleURLSchemes") == null);
 }
