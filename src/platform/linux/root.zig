@@ -481,10 +481,9 @@ fn removeTray(context: ?*anyopaque) anyerror!void {
 
 test "linux tray stub createTray succeeds" {
     const options = platform_mod.TrayOptions{
-        .label = "test",
-        .icon_path = null,
-        .tooltip = null,
-        .menu_items = &.{},
+        .icon_path = "test-icon",
+        .tooltip = "test tooltip",
+        .items = &.{},
     };
     // The stub succeeds on all calls so the framework's tray API surface
     // is exercisable end-to-end. The real libayatana-appindicator
