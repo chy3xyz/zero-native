@@ -137,6 +137,9 @@ pub fn main(init: std.process.Init) !void {
         try automation_cli.run(allocator, init.io, args[2..]);
     } else if (std.mem.eql(u8, command, "plugins")) {
         try tooling.plugins_cli.run(allocator, init.io, args[2..]);
+    } else if (std.mem.eql(u8, command, "updater")) {
+        const code = try tooling.updater_cli.run(init.io, allocator, args[2..]);
+        if (code != 0) std.process.exit(code);
     } else if (std.mem.eql(u8, command, "audit")) {
         const code = try tooling.audit.run(allocator, init.io, args[2..]);
         if (code != 0) std.process.exit(code);
@@ -252,6 +255,7 @@ fn usage() void {
         \\  automate <command>
         \\  skills list|get
         \\  plugins list|info <name>|create <name>
+        \\  updater sign|verify --key|--pubkey ... --input ... --output|--sig ...
         \\  audit [app.zon]                    (exits 0 info, 1 warn, 2 error)
         \\  version
         \\

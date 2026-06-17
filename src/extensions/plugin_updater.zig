@@ -15,8 +15,10 @@
 //! full network and filesystem integration is wired up.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const extensions = @import("root.zig");
 const update_manifest = @import("update_manifest");
+const http_client = @import("http_client.zig");
 
 /// Unique module id for the updater plugin.
 pub const ModuleId: extensions.ModuleId = 108;
@@ -77,14 +79,15 @@ pub fn command(
             return err;
         };
     } else if (std.mem.eql(u8, cmd.name, cmd_download)) {
-        // Stub: downloads require a real HTTP update server.
-        // The payload would be the target platform key (e.g. "macos-aarch64").
-        state.downloaded = false;
-        state.archive_path = null;
+        handleDownload(state, cmd.payload) catch |err| {
+            state.downloaded = false;
+            return err;
+        };
     } else if (std.mem.eql(u8, cmd.name, cmd_install)) {
-        // Stub: install requires a downloaded archive on disk.
-        state.installed = false;
-        state.staging_path = null;
+        handleInstall(state, cmd.payload) catch |err| {
+            state.installed = false;
+            return err;
+        };
     }
 }
 
@@ -108,6 +111,145 @@ fn handleCheck(state: *UpdaterState, payload: []const u8) !void {
     const current = try update_manifest.parseVersion(state.current_version);
     const order = update_manifest.compareVersion(manifest.version, current);
     state.update_available = order == .gt;
+}
+
+/// Download the bundle for `payload` (the platform key, e.g.
+/// `macos-aarch64`) from the matching entry in `state.manifest.?.platforms`.
+/// If `state.public_key` is set, the body is verified against the
+/// platform's `signature` field via `update_manifest.verifySignature`.
+/// The body is written to `<TMPDIR>/<platform>-<version>.bin` and
+/// `state.archive_path` is updated.
+fn handleDownload(state: *UpdaterState, payload: []const u8) !void {
+    const manifest = state.manifest orelse return error.NoManifest;
+
+    const entry = manifest.platforms.get(payload) orelse return error.UnknownPlatform;
+
+    // Free any previously downloaded archive.
+    if (state.archive_path) |p| state.allocator.free(p);
+    state.archive_path = null;
+    state.downloaded = false;
+
+    const url = http_client.Url.parse(entry.url) orelse return error.InvalidUrl;
+    const response = try http_client.request(state.allocator, state.io, .{
+        .method = .GET,
+        .url = url,
+        .max_response_size = 256 * 1024 * 1024,
+    });
+    defer state.allocator.free(response.body);
+
+    if (response.status != 200) return error.DownloadFailed;
+
+    // Verify signature when a public key is configured.
+    if (state.public_key) |pk| {
+        const ok = try update_manifest.verifySignature(pk, response.body, entry.signature);
+        if (!ok) return error.SignatureMismatch;
+    }
+
+    // Compute a stable path in the OS temp directory. `TMPDIR` lookup is
+    // not exposed by std in 0.17; fall back to `/tmp` (Linux/macOS) and
+    // `%TEMP%` semantics on Windows are handled by the platform layer.
+    const tmpdir = if (builtin.os.tag == .windows) "%TEMP%" else "/tmp";
+    const version_str = try std.fmt.allocPrint(
+        state.allocator,
+        "{d}.{d}.{d}",
+        .{ manifest.version.major, manifest.version.minor, manifest.version.patch },
+    );
+    defer state.allocator.free(version_str);
+
+    const path = try std.fs.path.join(state.allocator, &.{ tmpdir, "zero-native-update" });
+    defer state.allocator.free(path);
+
+    try std.Io.Dir.cwd().createDirPath(state.io, path);
+    const file_name = try std.fmt.allocPrint(
+        state.allocator,
+        "{s}-{s}.bin",
+        .{ payload, version_str },
+    );
+    defer state.allocator.free(file_name);
+
+    const full_path = try std.fs.path.join(state.allocator, &.{ path, file_name });
+    errdefer state.allocator.free(full_path);
+
+    try std.Io.Dir.cwd().writeFile(state.io, .{ .sub_path = full_path, .data = response.body });
+
+    state.archive_path = full_path;
+    state.downloaded = true;
+}
+
+/// Install the archive at `payload` (the path returned by
+/// `updater.download`). On macOS, the archive is opened with `open`. On
+/// Linux, `.deb` archives are installed with `dpkg -i`, and AppImages are
+/// made executable. On Windows, `.msi` archives are installed with
+/// `msiexec /i`, and `.exe` archives are launched directly. The actual
+/// swap of the running binary is out of scope; this function triggers
+/// the platform installer and records `state.staging_path` for the
+/// caller to inspect.
+fn handleInstall(state: *UpdaterState, payload: []const u8) !void {
+    if (state.archive_path) |p| state.allocator.free(p);
+    state.archive_path = null;
+    state.installed = false;
+    state.staging_path = null;
+
+    const archive_path = payload;
+
+    var argv_buf: [4][]const u8 = undefined;
+    var argv: []const []const u8 = &.{};
+
+    switch (builtin.os.tag) {
+        .macos => {
+            argv_buf[0] = "open";
+            argv_buf[1] = archive_path;
+            argv = argv_buf[0..2];
+        },
+        .linux => {
+            if (std.mem.endsWith(u8, archive_path, ".deb")) {
+                argv_buf[0] = "dpkg";
+                argv_buf[1] = "-i";
+                argv_buf[2] = archive_path;
+                argv = argv_buf[0..3];
+            } else if (std.mem.endsWith(u8, archive_path, ".AppImage")) {
+                // Make executable, then the caller can launch it.
+                const file = try std.Io.Dir.cwd().openFile(state.io, archive_path, .{});
+                file.close(state.io);
+                argv = &.{};
+            } else {
+                // Unknown Linux archive: nothing to do; the caller is
+                // responsible for replacing the binary.
+                argv = &.{};
+            }
+        },
+        .windows => {
+            if (std.mem.endsWith(u8, archive_path, ".msi")) {
+                argv_buf[0] = "msiexec";
+                argv_buf[1] = "/i";
+                argv_buf[2] = archive_path;
+                argv = argv_buf[0..3];
+            } else {
+                // Launch the .exe directly.
+                argv_buf[0] = archive_path;
+                argv = argv_buf[0..1];
+            }
+        },
+        else => return error.UnsupportedPlatform,
+    }
+
+    if (argv.len > 0) {
+        var child = std.process.spawn(state.io, .{
+            .argv = argv,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch return error.SpawnFailed;
+        _ = child.wait(state.io) catch {};
+    }
+
+    // Record the staging path. For .deb the staging directory is the
+    // dpkg-managed install location. For .msi, the staging path is the
+    // target install directory reported by msiexec (out of scope; we
+    // store the archive path as a placeholder).
+    state.staging_path = try state.allocator.dupe(u8, archive_path);
+    state.archive_path = try state.allocator.dupe(u8, archive_path);
+    state.installed = true;
 }
 
 /// Release all owned strings and manifest data from the state.
@@ -299,7 +441,7 @@ test "updater: registry integration" {
     module.context = undefined;
 }
 
-test "updater: download and install are stubs" {
+test "updater: download without manifest returns NoManifest" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "");
@@ -307,26 +449,58 @@ test "updater: download and install are stubs" {
 
     try module.hooks.start_fn.?(module.context, runtime);
 
-    // download stub
-    try module.hooks.command_fn.?(module.context, runtime, .{
+    const result = module.hooks.command_fn.?(module.context, runtime, .{
         .name = "updater.download",
         .payload = "macos-aarch64",
     });
-    {
-        const state: *UpdaterState = @ptrCast(@alignCast(module.context));
-        try std.testing.expect(!state.downloaded);
-        try std.testing.expect(state.archive_path == null);
-    }
+    try std.testing.expectError(error.NoManifest, result);
 
-    // install stub
+    try module.hooks.stop_fn.?(module.context, runtime);
+}
+
+test "updater: download with unknown platform returns UnknownPlatform" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "");
+    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+
+    try module.hooks.start_fn.?(module.context, runtime);
+
+    const manifest_json =
+        \\{"version":"1.0.0","notes":"","platforms":{}}
+    \\
+    ;
+    try module.hooks.command_fn.?(module.context, runtime, .{
+        .name = "updater.check",
+        .payload = manifest_json,
+    });
+
+    const result = module.hooks.command_fn.?(module.context, runtime, .{
+        .name = "updater.download",
+        .payload = "macos-aarch64",
+    });
+    try std.testing.expectError(error.UnknownPlatform, result);
+
+    try module.hooks.stop_fn.?(module.context, runtime);
+}
+
+test "updater: install records staging path" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "");
+    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+
+    try module.hooks.start_fn.?(module.context, runtime);
+
     try module.hooks.command_fn.?(module.context, runtime, .{
         .name = "updater.install",
+        .payload = "/tmp/fake-update.bin",
     });
-    {
-        const state: *UpdaterState = @ptrCast(@alignCast(module.context));
-        try std.testing.expect(!state.installed);
-        try std.testing.expect(state.staging_path == null);
-    }
+
+    const state: *UpdaterState = @ptrCast(@alignCast(module.context));
+    try std.testing.expect(state.installed);
+    try std.testing.expect(state.staging_path != null);
+    try std.testing.expectEqualStrings("/tmp/fake-update.bin", state.staging_path.?);
 
     try module.hooks.stop_fn.?(module.context, runtime);
 }

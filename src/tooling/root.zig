@@ -11,6 +11,7 @@ pub const cef = @import("cef.zig");
 pub const web_engine = @import("web_engine.zig");
 pub const codegen_cli = @import("codegen_cli.zig");
 pub const plugins_cli = @import("plugins_cli.zig");
+pub const updater_cli = @import("updater_cli.zig");
 pub const audit = @import("audit.zig");
 
 test {
