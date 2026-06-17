@@ -100,10 +100,6 @@ pub fn build(b: *std.Build) void {
 
     const codegen_mod = module(b, target, optimize, "src/bridge/codegen.zig");
 
-    const extensions_mod = module(b, target, optimize, "src/extensions/all.zig");
-    extensions_mod.addImport("update_manifest", update_manifest_mod);
-    extensions_mod.addImport("httpz", httpz_mod);
-
     const geometry_tests = testArtifact(b, geometry_mod);
     const assets_tests = testArtifact(b, assets_mod);
     const app_dirs_tests = testArtifact(b, app_dirs_mod);
@@ -114,7 +110,6 @@ pub fn build(b: *std.Build) void {
     const json_tests = testArtifact(b, json_mod);
     const update_manifest_tests = testArtifact(b, update_manifest_mod);
     const codegen_tests = testArtifact(b, codegen_mod);
-    const extensions_tests = testArtifact(b, extensions_mod);
 
     const desktop_mod = module(b, target, optimize, "src/root.zig");
     desktop_mod.addImport("geometry", geometry_mod);
@@ -164,7 +159,14 @@ pub fn build(b: *std.Build) void {
     tooling_mod.addImport("trace", trace_mod);
     tooling_mod.addImport("security", security_mod);
     tooling_mod.addImport("sandbox", sandbox_mod);
+    tooling_mod.addImport("bridge_codegen", codegen_mod);
     const tooling_tests = testArtifact(b, tooling_mod);
+
+    const extensions_mod = module(b, target, optimize, "src/extensions/all.zig");
+    extensions_mod.addImport("update_manifest", update_manifest_mod);
+    extensions_mod.addImport("httpz", httpz_mod);
+    extensions_mod.addImport("tooling", tooling_mod);
+    const extensions_tests = testArtifact(b, extensions_mod);
 
     const cli_mod = module(b, target, optimize, "tools/zero-native/main.zig");
     cli_mod.addImport("tooling", tooling_mod);

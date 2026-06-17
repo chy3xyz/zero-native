@@ -50,6 +50,8 @@ pub fn main(init: std.process.Init) !void {
         const output_dir = if (args.len >= 5) args[4] else "zig-out/assets";
         const stats = try tooling.assets.bundle(allocator, init.io, assets_dir, output_dir);
         std.debug.print("bundled {d} assets into {s}\n", .{ stats.asset_count, output_dir });
+    } else if (std.mem.eql(u8, command, "codegen")) {
+        try tooling.codegen_cli.run(allocator, init.io, args[2..]);
     } else if (std.mem.eql(u8, command, "package")) {
         const manifest_path = try flagValue(args, "--manifest") orelse "app.zon";
         const metadata = try tooling.manifest.readMetadata(allocator, init.io, manifest_path);
@@ -152,6 +154,7 @@ fn usage() void {
         \\  validate [app.zon]
         \\  bundle-assets [app.zon] [assets] [output]
         \\  package [--target macos] [--output path] [--binary path] [--assets path] [--web-engine system|chromium] [--cef-dir path] [--cef-auto-install] [--signing none|adhoc|identity] [--identity name] [--entitlements path] [--team-id id] [--archive]
+        \\  codegen [--out path] [app.zon]
         \\  dev [--manifest app.zon] --binary path [--url http://127.0.0.1:5173/] [--command "npm run dev"] [--timeout-ms 30000]
         \\  package-windows [--output path] [--binary path]
         \\  package-linux [--output path] [--binary path]
@@ -259,7 +262,8 @@ fn positionalArg(args: []const []const u8) ?[]const u8 {
                 std.mem.eql(u8, arg, "--team-id") or
                 std.mem.eql(u8, arg, "--command") or
                 std.mem.eql(u8, arg, "--url") or
-                std.mem.eql(u8, arg, "--timeout-ms"))
+                std.mem.eql(u8, arg, "--timeout-ms") or
+                std.mem.eql(u8, arg, "--out"))
             {
                 skip_next = true;
             }

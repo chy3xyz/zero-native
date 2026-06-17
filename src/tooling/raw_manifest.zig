@@ -19,6 +19,11 @@ pub const RawManifest = struct {
     frontend: ?RawFrontend = null,
     security: RawSecurity = .{},
     windows: []const RawWindow = &.{},
+    /// Plugin module names enabled for this app (e.g. "clipboard", "shell").
+    /// The list is consumed by `extensions.registry.loadFromManifest` to
+    /// instantiate matching `extensions.Module` values at startup. Unknown
+    /// names cause a hard error so typos are caught at load time.
+    plugins: []const []const u8 = &.{},
     /// Structured per-window security capabilities. Each entry describes
     /// a named capability, the windows it targets, and the granular
     /// permissions it grants with allow/deny scope globs.

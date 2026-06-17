@@ -29,6 +29,11 @@ pub const Metadata = struct {
     /// permissions with allow/deny scope globs.
     capabilities: []const capability.Capability = &.{},
     bridge_commands: []const BridgeCommandMetadata = &.{},
+    /// Plugin module names enabled for this app. The list is consumed by
+    /// `extensions.registry.loadFromManifest` to instantiate matching
+    /// `extensions.Module` values at startup. Empty by default; the strings
+    /// are duped by the parser and freed in `deinit`.
+    plugins: []const []const u8 = &.{},
     web_engine: []const u8 = "system",
     cef: web_engine_tool.CefConfig = .{},
     frontend: ?FrontendMetadata = null,
@@ -64,6 +69,8 @@ pub const Metadata = struct {
             if (command.origins.len > 0) allocator.free(command.origins);
         }
         if (self.bridge_commands.len > 0) allocator.free(self.bridge_commands);
+        for (self.plugins) |value| allocator.free(value);
+        if (self.plugins.len > 0) allocator.free(self.plugins);
         if (self.frontend) |frontend| {
             allocator.free(frontend.dist);
             allocator.free(frontend.entry);
@@ -197,7 +204,11 @@ pub fn validateFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) 
 }
 
 pub fn readMetadata(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Metadata {
-    const source = try readFile(allocator, io, path);
+    return readMetadataIn(std.Io.Dir.cwd(), allocator, io, path);
+}
+
+pub fn readMetadataIn(dir: std.Io.Dir, allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Metadata {
+    const source = try readFileIn(dir, allocator, io, path);
     defer allocator.free(source);
     return parseText(allocator, source);
 }
@@ -225,6 +236,7 @@ pub fn parseText(allocator: std.mem.Allocator, source: []const u8) !Metadata {
         .feature_capabilities = &.{},
         .capabilities = &.{},
         .bridge_commands = &.{},
+        .plugins = &.{},
         .web_engine = try allocator.dupe(u8, raw.web_engine),
         .cef = .{
             .dir = try allocator.dupe(u8, raw.cef.dir),
@@ -251,6 +263,7 @@ pub fn parseText(allocator: std.mem.Allocator, source: []const u8) !Metadata {
     metadata.feature_capabilities = try duplicateStringList(allocator, raw.feature_capabilities);
     metadata.capabilities = try convertRawSecurityCapabilities(allocator, raw.capabilities);
     metadata.bridge_commands = try convertRawBridgeCommands(allocator, raw.bridge.commands);
+    metadata.plugins = try duplicateStringList(allocator, raw.plugins);
     metadata.frontend = try convertRawFrontend(allocator, raw.frontend);
     const action = try allocator.dupe(u8, raw.security.navigation.external_links.action);
     errdefer allocator.free(action);
@@ -512,7 +525,11 @@ pub fn printDiagnostic(result: ValidationResult) void {
 }
 
 fn readFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
-    var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    return readFileIn(std.Io.Dir.cwd(), allocator, io, path);
+}
+
+pub fn readFileIn(dir: std.Io.Dir, allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
+    var file = try dir.openFile(io, path, .{});
     defer file.close(io);
     var read_buffer: [4096]u8 = undefined;
     var reader = file.reader(io, &read_buffer);
@@ -710,6 +727,36 @@ test "manifest metadata parser reads identity version and lists" {
     try std.testing.expectEqualStrings("third_party/cef/macos", metadata.cef.dir);
     try std.testing.expect(metadata.cef.auto_install);
     try std.testing.expectEqual(@as(u32, 2), (try parseVersion(metadata.version)).minor);
+}
+
+test "manifest metadata parser reads plugins list" {
+    const metadata = try parseText(std.testing.allocator,
+        \\.{
+        \\  .id = "com.example.app",
+        \\  .name = "example",
+        \\  .version = "1.2.3",
+        \\  .plugins = .{ "clipboard", "shell", "notification" },
+        \\}
+    );
+    defer metadata.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), metadata.plugins.len);
+    try std.testing.expectEqualStrings("clipboard", metadata.plugins[0]);
+    try std.testing.expectEqualStrings("shell", metadata.plugins[1]);
+    try std.testing.expectEqualStrings("notification", metadata.plugins[2]);
+}
+
+test "manifest metadata parser defaults plugins to empty" {
+    const metadata = try parseText(std.testing.allocator,
+        \\.{
+        \\  .id = "com.example.app",
+        \\  .name = "example",
+        \\  .version = "1.2.3",
+        \\}
+    );
+    defer metadata.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), metadata.plugins.len);
 }
 
 test "manifest metadata parser reads structured security policy" {
