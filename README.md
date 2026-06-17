@@ -1,6 +1,10 @@
 # zero-native
 
+[![CI](https://github.com/chy3xyz/zero-native/actions/workflows/ci.yml/badge.svg)](https://github.com/chy3xyz/zero-native/actions/workflows/ci.yml)
+
 Build native desktop apps with web UI. Tiny binaries. Minimal memory. Instant rebuilds.
+
+11 bundled plugins · Capabilities v2 · Channel streaming · App Sandbox · Auto-updater
 
 zero-native is a Zig desktop app shell for modern web frontends. Use the platform WebView when you want the smallest possible app, or bundle Chromium through CEF when rendering consistency matters.
 

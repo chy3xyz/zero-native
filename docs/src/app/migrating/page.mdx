@@ -1,0 +1,230 @@
+# Migration Guide
+
+If you're upgrading from zero-native 0.1.x to 0.2.x, this guide covers the breaking and notable changes. Each section includes a short summary and a code snippet showing the old form next to the new one.
+
+## Zig 0.17 compatibility
+
+The 0.2.x line tracks Zig 0.17. Most internal code moved from sentinel-terminated `[:0]u8` arrays to sentinel-aware helpers, and from tuple spread (`**`) to `@splat`. The `std.meta.fields` helper is now `field_names`.
+
+```zig
+// 0.1.x — sentinel-terminated duplication.
+const copy = try allocator.dupeZ(u8, source);
+const args: [3]u32 = .{ 1, 2, 3 };
+call(.{args}); // tuple spread
+
+// 0.2.x — explicit sentinel and `@splat`.
+const copy = try allocator.dupeSentinel(u8, source, 0);
+const args: [3]u32 = .{ 1, 2, 3 };
+call(@splat(args));
+```
+
+```zig
+// 0.1.x — walk enum field names.
+inline for (@typeInfo(Foo).@"enum".fields) |field| { ... }
+
+// 0.2.x — use the dedicated helper.
+inline for (field_names(Foo)) |field| { ... }
+```
+
+## Capabilities v2
+
+The structured `capabilities` block in `app.zon` is deny-by-default, scoped per-window, and accepts glob `allow`/`deny` patterns.
+
+```text
+// 0.1.x — coarse permission list.
+.permissions = .{ "window", "filesystem" }
+
+// 0.2.x — per-window capability with allow/deny globs.
+.capabilities = .{
+    .{
+        .identifier = "editor",
+        .description = "editor window capabilities",
+        .windows = .{ "main" },
+        .permissions = .{
+            .{
+                .identifier = "fs:allow-read-text-file",
+                .scopes = .{
+                    .allow = .{ .{ .kind = "path", .pattern = "$APPCONFIG/**" } },
+                    .deny  = .{ .{ .kind = "path", .pattern = "$APPCONFIG/secret/**" } },
+                },
+            },
+        },
+    },
+},
+```
+
+## CSP injection
+
+`WebViewSource` gained a `csp` field. When set, the runtime injects a `Content-Security-Policy` header on the served response and a matching `<meta>` tag on inline HTML.
+
+```zig
+// 0.1.x — no CSP.
+const source: WebViewSource = .{ .kind = .html, .html = html };
+
+// 0.2.x — declarative CSP.
+const source: WebViewSource = .{
+    .kind = .html,
+    .html = html,
+    .csp = "default-src 'self'; script-src 'self' 'unsafe-inline'",
+};
+```
+
+## App Sandbox
+
+macOS entitlements are now declared in the manifest under `security.sandbox` rather than via a separate `*.entitlements` file (the file can still be supplied for advanced cases).
+
+```text
+// 0.1.x — external plist referenced by the build.
+// entitlements.plist
+<plist><dict><key>com.apple.security.app-sandbox</key><true/></dict></plist>
+
+// 0.2.x — inline in app.zon.
+.security = .{
+    .sandbox = .{
+        .sandbox = true,
+        .network_client = true,
+        .file_read = .{ "$APPDATA/**" },
+        .allow_jit = true,
+    },
+},
+```
+
+## Bundled plugins
+
+The 11 bundled plugins now ship in the box. `app.zon` gained a `plugins` array, and the runtime instantiates matching modules at startup.
+
+```text
+// 0.1.x — no plugin list.
+.{
+    .name = "my-app",
+    .version = "0.1.0",
+}
+
+// 0.2.x — opt in to bundled plugins by name.
+.{
+    .name = "my-app",
+    .version = "0.2.0",
+    .plugins = .{ "clipboard", "shell", "http", "websocket" },
+}
+```
+
+Run `zero-native plugins list` to see the full set, and `zero-native plugins info <name>` for a single plugin's metadata.
+
+## Channel(T) streaming
+
+The bridge gained a streaming channel API. Use `bridge.Channel(T)` to send a sequence of typed messages from Zig to JavaScript.
+
+```zig
+// 0.1.x — single fire-and-forget invoke.
+try bridge.invoke("log", .{ .level = "info", .message = msg });
+
+// 0.2.x — open a typed channel and stream.
+var channel = try bridge.Channel(LogEvent).open("logs");
+defer channel.close();
+try channel.send(.{ .level = "info", .message = msg });
+```
+
+On the JS side, subscribe with `window.zero.subscribe("logs", handler)`.
+
+## Command.payload
+
+`extensions.Command` gained a `payload` field so plugin authors can carry an argument string without inventing a new `Command` variant per plugin.
+
+```zig
+// 0.1.x — bespoke command per plugin.
+pub const Command = struct { name: []const u8, text: ?[]const u8 = null };
+
+// 0.2.x — single shape, payload convention per plugin.
+const cmd: extensions.Command = .{
+    .name = "clipboard.write_text",
+    .payload = "hello, world",
+};
+```
+
+## Atomic bridge slot
+
+`AsyncBridgeResponseSlot.in_use` is now an `std.atomic.Value(bool)`. Existing code that read the field still compiles; code that previously did non-atomic CAS must be updated.
+
+```zig
+// 0.1.x — non-atomic check.
+if (slot.in_use) return error.Busy;
+
+// 0.2.x — atomic load.
+if (slot.in_use.load(.acquire)) return error.Busy;
+```
+
+## Auto-updater
+
+The 0.2.x line ships an `update_manifest` module with Ed25519 signature verification. The updater plugin now requires a signed manifest URL and rejects unsigned responses.
+
+```zig
+// 0.1.x — fetch and compare versions, no signature check.
+const manifest = try std.json.parseFromSlice(...);
+if (compareVersions(manifest.version, current) > 0) try downloadUpdate(...);
+
+// 0.2.x — verify the Ed25519 signature first.
+const update = try update_manifest.fetchAndVerify(allocator, io, .{
+    .url = "https://example.com/manifest.json",
+    .public_key = PUBLIC_KEY,
+});
+if (update.version.order(current) == .gt) try update.download();
+```
+
+## Version compatibility matrix
+
+<table>
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>0.1.x</th>
+      <th>0.2.x</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Zig version</td>
+      <td>0.14 / 0.15</td>
+      <td>0.17</td>
+    </tr>
+    <tr>
+      <td>Capabilities model</td>
+      <td>flat list, allow-only</td>
+      <td>per-window, deny-by-default, glob scopes</td>
+    </tr>
+    <tr>
+      <td>CSP</td>
+      <td>not supported</td>
+      <td>per-source <code>csp</code> field</td>
+    </tr>
+    <tr>
+      <td>App Sandbox</td>
+      <td>external <code>.entitlements</code></td>
+      <td><code>security.sandbox</code> block</td>
+    </tr>
+    <tr>
+      <td>Bundled plugins</td>
+      <td>opt-in copy-paste</td>
+      <td>11 in-box, selected via <code>.plugins</code></td>
+    </tr>
+    <tr>
+      <td>Streaming IPC</td>
+      <td>request/response only</td>
+      <td><code>bridge.Channel(T)</code></td>
+    </tr>
+    <tr>
+      <td>Bridge command shape</td>
+      <td>per-plugin variants</td>
+      <td><code>extensions.Command</code> + <code>payload</code></td>
+    </tr>
+    <tr>
+      <td>Bridge slot concurrency</td>
+      <td>non-atomic</td>
+      <td>atomic <code>in_use</code></td>
+    </tr>
+    <tr>
+      <td>Auto-updater</td>
+      <td>unsigned manifest</td>
+      <td>Ed25519-signed <code>update_manifest</code></td>
+    </tr>
+  </tbody>
+</table>
