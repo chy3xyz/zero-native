@@ -1,0 +1,171 @@
+name: 'Build zero-native app'
+description: >-
+  Build, test, and package a zero-native app for a given platform. Runs
+  `zig build`, optionally `zig build test`, then `zero-native package` to emit
+  the platform-specific bundle under `output-dir`. Surfaces optional
+  macOS/iOS code signing and Android keystore handling. Artifacts are
+  uploaded with `actions/upload-artifact@v4`.
+
+inputs:
+  app-zon-path:
+    description: 'Path to the app.zon manifest.'
+    required: false
+    default: 'app.zon'
+  target:
+    description: 'Target platform (one of macos, linux, windows, ios, android).'
+    required: true
+  zig-version:
+    description: 'Zig toolchain version to install via mlugg/setup-zig.'
+    required: false
+    default: '0.17.0-dev.813+2153f8143'
+  binary-name:
+    description: >-
+      Output binary name (no extension). Use the manifest `.id` or
+      `.name`. The default `app` is a safe fallback for downstream
+      callers that always override this.
+    required: false
+    default: 'app'
+  output-dir:
+    description: 'Output directory for packaged artifacts.'
+    required: false
+    default: './dist'
+  run-tests:
+    description: 'Whether to run `zig build test` after `zig build`.'
+    required: false
+    default: 'true'
+  run-package:
+    description: 'Whether to run `zero-native package` to emit the platform bundle.'
+    required: false
+    default: 'true'
+  signing-identity:
+    description: >-
+      Optional Apple Developer ID for macOS/iOS code signing. When
+      provided, the action imports the P12 certificate from
+      `secrets.MACOS_P12_BASE64` (password: `secrets.MACOS_P12_PASSWORD`)
+      via `apple-actions/import-codesign-certs@v3` and exports the
+      identity to the build env as `MACOS_SIGNING_IDENTITY`.
+    required: false
+    default: ''
+  keystore-base64:
+    description: >-
+      Optional base64-encoded Android keystore. When provided on an
+      Android target, the action decodes it to `/tmp/keystore.jks` and
+      exports `KEYSTORE_FILE` to the build env. Pair with the
+      `KEYSTORE_PASSWORD`, `KEY_ALIAS`, and `KEY_PASSWORD` secrets for
+      full Gradle signing.
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: ${{ inputs.zig-version }}
+        cache: true
+
+    - name: Import Apple code signing certificates
+      if: >-
+        (inputs.target == 'macos' || inputs.target == 'ios')
+        && inputs.signing-identity != ''
+      uses: apple-actions/import-codesign-certs@v3
+      with:
+        p12-file-base64: ${{ secrets.MACOS_P12_BASE64 }}
+        p12-password: ${{ secrets.MACOS_P12_PASSWORD }}
+      env:
+        MACOS_SIGNING_IDENTITY: ${{ inputs.signing-identity }}
+
+    - name: Decode Android keystore
+      if: ${{ inputs.target == 'android' && inputs.keystore-base64 != '' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "${{ inputs.keystore-base64 }}" | base64 -d > /tmp/keystore.jks
+        chmod 600 /tmp/keystore.jks
+        echo "KEYSTORE_FILE=/tmp/keystore.jks" >> "$GITHUB_ENV"
+        echo "::notice::Android keystore decoded to /tmp/keystore.jks"
+
+    - name: zig build
+      shell: bash
+      run: zig build
+
+    - name: zig build test
+      if: inputs.run-tests == 'true'
+      shell: bash
+      run: zig build test
+
+    - name: Package app
+      if: inputs.run-package == 'true'
+      shell: bash
+      env:
+        MACOS_SIGNING_IDENTITY: ${{ inputs.signing-identity }}
+      run: |
+        set -euo pipefail
+        BIN_SUFFIX=""
+        if [ "${{ inputs.target }}" = "windows" ]; then
+          BIN_SUFFIX=".exe"
+        fi
+        BINARY="./zig-out/bin/${{ inputs.binary-name }}${BIN_SUFFIX}"
+        if [ ! -f "$BINARY" ]; then
+          echo "::error::Expected built binary not found: $BINARY"
+          ls -la ./zig-out/bin/ || true
+          exit 1
+        fi
+        mkdir -p "${{ inputs.output-dir }}"
+        ./zig-out/bin/zero-native package \
+          --target ${{ inputs.target }} \
+          --manifest ${{ inputs.app-zon-path }} \
+          --output ${{ inputs.output-dir }} \
+          --binary "$BINARY"
+
+    - name: Generate MSI installer (Windows)
+      if: >-
+        inputs.target == 'windows'
+        && inputs.run-package == 'true'
+      shell: bash
+      continue-on-error: true
+      run: |
+        if [ -x ./zig-out/bin/zero-native ] && ./zig-out/bin/zero-native package-msi --help >/dev/null 2>&1; then
+          ./zig-out/bin/zero-native package-msi --output ${{ inputs.output-dir }}
+        else
+          echo "::notice::package-msi not available yet, skipping"
+        fi
+
+    - name: Generate DEB package (Linux)
+      if: >-
+        inputs.target == 'linux'
+        && inputs.run-package == 'true'
+      shell: bash
+      continue-on-error: true
+      run: |
+        if [ -x ./zig-out/bin/zero-native ] && ./zig-out/bin/zero-native package-deb --help >/dev/null 2>&1; then
+          ./zig-out/bin/zero-native package-deb --output ${{ inputs.output-dir }}
+        else
+          echo "::notice::package-deb not available yet, skipping"
+        fi
+
+    - name: Generate AppImage (Linux)
+      if: >-
+        inputs.target == 'linux'
+        && inputs.run-package == 'true'
+      shell: bash
+      continue-on-error: true
+      run: |
+        if [ -x ./zig-out/bin/zero-native ] && ./zig-out/bin/zero-native package-appimage --help >/dev/null 2>&1; then
+          ./zig-out/bin/zero-native package-appimage --output ${{ inputs.output-dir }}
+        else
+          echo "::notice::package-appimage not available yet, skipping"
+        fi
+
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: zero-native-${{ inputs.target }}-artifacts
+        path: ${{ inputs.output-dir }}/**
+        if-no-files-found: warn
+        retention-days: 14

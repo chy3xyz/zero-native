@@ -1,0 +1,265 @@
+# CI/CD with GitHub Actions
+
+zero-native ships a reusable composite action and a multi-OS release
+workflow that builds, tests, and packages your app on Linux, macOS,
+and Windows. Both live under `.github/` and can be used as-is by any
+zero-native app.
+
+## The composite action
+
+`.github/actions/build-zero-native-app/action.yml` is a composite
+action that runs the full build pipeline for a single target:
+
+1. Checkout the repository.
+2. Install Zig via `mlugg/setup-zig@v2`.
+3. Import Apple code-signing certificates (macOS / iOS) when a signing
+   identity is provided.
+4. Decode an Android keystore (Android) when one is provided.
+5. Run `zig build`.
+6. Run `zig build test` when `run-tests` is `true`.
+7. Run `zero-native package` when `run-package` is `true`.
+8. Attempt optional installer generation (`.msi` / `.deb` /
+   `.AppImage`) — these no-op cleanly if the corresponding subcommand
+   isn't built into the CLI yet.
+9. Upload everything under `output-dir` as a workflow artifact.
+
+### Inputs
+
+<table>
+  <thead>
+    <tr>
+      <th>Input</th>
+      <th>Required</th>
+      <th>Default</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>target</code></td>
+      <td>yes</td>
+      <td>—</td>
+      <td>One of <code>macos</code>, <code>linux</code>, <code>windows</code>, <code>ios</code>, <code>android</code>.</td>
+    </tr>
+    <tr>
+      <td><code>app-zon-path</code></td>
+      <td>no</td>
+      <td><code>app.zon</code></td>
+      <td>Path to the manifest.</td>
+    </tr>
+    <tr>
+      <td><code>zig-version</code></td>
+      <td>no</td>
+      <td><code>0.17.0-dev.813+2153f8143</code></td>
+      <td>Zig toolchain version to install.</td>
+    </tr>
+    <tr>
+      <td><code>binary-name</code></td>
+      <td>no</td>
+      <td><code>app</code></td>
+      <td>Built-binary name without extension. Use the manifest <code>.id</code>, <code>.name</code>, or <code>github.event.repository.name</code>.</td>
+    </tr>
+    <tr>
+      <td><code>output-dir</code></td>
+      <td>no</td>
+      <td><code>./dist</code></td>
+      <td>Where the packaged bundle is written and uploaded from.</td>
+    </tr>
+    <tr>
+      <td><code>run-tests</code></td>
+      <td>no</td>
+      <td><code>true</code></td>
+      <td>Run <code>zig build test</code>.</td>
+    </tr>
+    <tr>
+      <td><code>run-package</code></td>
+      <td>no</td>
+      <td><code>true</code></td>
+      <td>Run <code>zero-native package</code>.</td>
+    </tr>
+    <tr>
+      <td><code>signing-identity</code></td>
+      <td>no</td>
+      <td><code>""</code></td>
+      <td>Apple Developer ID for macOS / iOS. Imports the P12 from <code>secrets.MACOS_P12_BASE64</code>.</td>
+    </tr>
+    <tr>
+      <td><code>keystore-base64</code></td>
+      <td>no</td>
+      <td><code>""</code></td>
+      <td>Base64-encoded Android keystore. Decoded to <code>/tmp/keystore.jks</code> and exposed as <code>KEYSTORE_FILE</code>.</td>
+    </tr>
+  </tbody>
+</table>
+
+### Basic usage
+
+The minimum viable job builds the app for a single platform:
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-zero-native-app
+        with:
+          target: linux
+          binary-name: my-app
+```
+
+### Multi-OS matrix
+
+Build for every desktop platform in parallel:
+
+```yaml
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos
+            os: macos-latest
+          - target: linux
+            os: ubuntu-latest
+          - target: windows
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-zero-native-app
+        with:
+          target: ${{ matrix.target }}
+          binary-name: ${{ github.event.repository.name }}
+```
+
+### Smoke test only
+
+Run the build and test steps without packaging — useful as a cheap
+gate on every PR:
+
+```yaml
+- uses: ./.github/actions/build-zero-native-app
+  with:
+    target: linux
+    binary-name: my-app
+    run-tests: 'true'
+    run-package: 'false'
+```
+
+The composite action's `verify-action` job in `.github/workflows/ci.yml`
+uses exactly this pattern.
+
+## Code-signing secrets
+
+### macOS / iOS
+
+Set the following repository or organization secrets:
+
+<table>
+  <thead>
+    <tr>
+      <th>Secret</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>MACOS_P12_BASE64</code></td>
+      <td>Base64-encoded Developer ID <code>.p12</code> certificate. Import with <code>base64 -i cert.p12 | pbcopy</code>.</td>
+    </tr>
+    <tr>
+      <td><code>MACOS_P12_PASSWORD</code></td>
+      <td>Password for the <code>.p12</code> file.</td>
+    </tr>
+  </tbody>
+</table>
+
+Pass the Developer ID string (for example
+`Developer ID Application: Acme, Inc. (TEAMID)`) via the
+`signing-identity` input. The action then imports the P12 via
+`apple-actions/import-codesign-certs@v3` and exports the identity to
+the build environment as `MACOS_SIGNING_IDENTITY` so that
+`zero-native package` can sign the bundle.
+
+The release workflow does **not** perform notarization in this wave —
+that's tracked separately. To notarize today, follow the
+[Code Signing](/packaging/signing) guide and submit the signed bundle
+through `xcrun notarytool` after the action runs.
+
+### Android
+
+Set the following secrets:
+
+<table>
+  <thead>
+    <tr>
+      <th>Secret / Input</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>keystore-base64</code> (action input)</td>
+      <td>Base64-encoded <code>.jks</code> / <code>.keystore</code> file.</td>
+    </tr>
+    <tr>
+      <td><code>KEYSTORE_PASSWORD</code></td>
+      <td>Keystore password (Gradle convention).</td>
+    </tr>
+    <tr>
+      <td><code>KEY_ALIAS</code></td>
+      <td>Key alias inside the keystore.</td>
+    </tr>
+    <tr>
+      <td><code>KEY_PASSWORD</code></td>
+      <td>Key password (Gradle convention).</td>
+    </tr>
+  </tbody>
+</table>
+
+When `keystore-base64` is provided, the action decodes it to
+`/tmp/keystore.jks` and exports `KEYSTORE_FILE` to `$GITHUB_ENV`. Your
+app's Gradle config picks the rest up from `secrets.*` as usual.
+
+## Release workflow
+
+`.github/workflows/release.yml` already runs the framework's CLI
+release pipeline. This wave extends it with two new jobs that exercise
+the composite action end-to-end and turn its artifacts into a GitHub
+Release:
+
+- **`build`** — runs the composite action for `macos`, `linux`, and
+  `windows` in parallel, uploading each platform's bundle as a
+  separate artifact (`zero-native-${{ matrix.target }}-artifacts`).
+- **`release`** — depends on `build`, downloads every artifact into
+  `dist/`, writes a `CHECKSUMS.txt`, and creates a GitHub Release via
+  `softprops/action-gh-release@v2` with `files: dist/**`.
+
+The `release` job is gated on tag pushes matching `app-v*` (for
+example `app-v0.1.0`). Push such a tag to build the app for all
+platforms and publish a release in one go:
+
+```bash
+git tag app-v0.1.0
+git push origin app-v0.1.0
+```
+
+The `build` job also runs on every push to `main` (and on
+`workflow_dispatch`) as a smoke test of the action itself.
+
+## Adapting for your app
+
+Fork or copy the release workflow into your own app repository and
+adjust:
+
+- `binary-name` — point at your app's binary (use the manifest
+  `.id` or `.name`).
+- `app-zon-path` — adjust if your manifest lives at a non-default
+  path.
+- `signing-identity` / `keystore-base64` — wire in the matching
+  secrets from the tables above.
+- The `release` job's tag pattern — change `app-v*` to whatever
+  convention you prefer.

@@ -22,6 +22,7 @@ All notable changes to zero-native will be documented in this file.
 - **Test coverage**: Wire previously-skipped plugin and channel tests into `zig build test` so the bundled plugin matrix and the `bridge.Channel(T)` streaming IPC are exercised on every CI run.
 - **Runtime split**: Pull the `Runtime` type, the bridge `Dispatcher`, the `Channel(T)` streaming helper, the `Metadata` parser, the `Capability` matcher, the `ModuleRegistry`, and the macOS `MacOSSandbox` plist generator into focused modules with their own public reference documentation.
 - **Trace and error handling**: Stable `security.csp_*`, `security.command_denied`, and `bridge.*` trace events; explicit `Error` codes on the bridge envelope; structured plugin `Command.payload` field; new `ModuleId` `u64` namespace; `Runtime.createStreamChannel` helper that wires a typed channel straight to `completeBridgeResponse`.
+- **CI/CD composite action**: New `.github/actions/build-zero-native-app` composite action and a multi-OS release workflow that uses it.
 
 ### Security
 
