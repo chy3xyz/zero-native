@@ -8,6 +8,7 @@ pub const package = @import("package.zig");
 pub const dev = @import("dev.zig");
 pub const cef = @import("cef.zig");
 pub const web_engine = @import("web_engine.zig");
+pub const codegen_cli = @import("codegen_cli.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());

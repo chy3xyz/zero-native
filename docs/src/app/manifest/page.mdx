@@ -24,6 +24,8 @@ name = "zero-native.window.create"
 permissions = ["window"]
 origins = ["zero://app"]
 
+plugins = ["clipboard", "shell", "notification", "http"]
+
 [security.navigation]
 allowed_origins = ["zero://app", "http://127.0.0.1:5173"]
 
@@ -129,6 +131,12 @@ restore_state = true
       <td>object[]</td>
       <td><code>[]</code></td>
       <td>Bridge command policies. Each entry has <code>name</code>, optional <code>permissions</code>, and optional <code>origins</code> (see <a href="/bridge">Bridge</a>)</td>
+    </tr>
+    <tr>
+      <td><code>plugins</code></td>
+      <td>string[]</td>
+      <td><code>[]</code></td>
+      <td>Plugin module names enabled for this app. Known values: <code>"clipboard"</code>, <code>"shell"</code>, <code>"notification"</code>, <code>"http"</code>, <code>"deep-link"</code>, <code>"store"</code>, <code>"autostart"</code>, <code>"single-instance"</code>, <code>"updater"</code>, <code>"global-shortcut"</code>, <code>"websocket"</code>. Unknown names fail at load time with <code>error.UnknownPlugin</code> (see <a href="/extensions">Extensions</a>)</td>
     </tr>
     <tr>
       <td><code>web_engine</code></td>
