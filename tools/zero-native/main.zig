@@ -131,6 +131,8 @@ pub fn main(init: std.process.Init) !void {
             .cef_dir = web_engine.cef_dir,
         });
         tooling.package.printDiagnostic(stats);
+    } else if (std.mem.eql(u8, command, "package-installer")) {
+        try runInstallerCommand(allocator, init.io, args);
     } else if (std.mem.eql(u8, command, "automate")) {
         try automation_cli.run(allocator, init.io, args[2..]);
     } else if (std.mem.eql(u8, command, "plugins")) {
@@ -146,6 +148,87 @@ pub fn main(init: std.process.Init) !void {
     } else {
         return usage();
     }
+}
+
+/// Dispatch `zero-native package-installer <kind> [app.zon] [--output dir] [--source path] [--icon path]`.
+///
+/// The `<kind>` argument selects one of `msi`, `nsis`, `deb`, or `appimage`.
+/// The command resolves the manifest, runs the existing `package` step
+/// when `--source` is not provided, and then shells out to the platform
+/// installer tool (`candle`, `makensis`, `dpkg-deb`, or `appimagetool`).
+fn runInstallerCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) !void {
+    if (args.len < 3) {
+        std.debug.print("usage: zero-native package-installer <msi|nsis|deb|appimage> [app.zon] [--output dir] [--source path] [--icon path]\n", .{});
+        return error.MissingArgument;
+    }
+
+    const kind_str = args[2];
+    const kind = std.meta.stringToEnum(tooling.installer.InstallerKind, kind_str) orelse {
+        std.debug.print("unknown installer kind: {s} (expected msi|nsis|deb|appimage)\n", .{kind_str});
+        return error.UnknownArgument;
+    };
+
+    if (!tooling.installer.isToolAvailable(io, kind)) {
+        std.debug.print(
+            "installer tool '{s}' not found in PATH; install it (e.g. `brew install dpkg` on macOS, `apt-get install wix` on Linux) and retry\n",
+            .{kind.toolCommand()},
+        );
+        return error.InstallerToolNotFound;
+    }
+
+    const app_zon_path = if (args.len >= 4 and args[3].len > 0 and args[3][0] != '-') args[3] else "app.zon";
+    const metadata = try tooling.manifest.readMetadata(allocator, io, app_zon_path);
+
+    const output_dir = try flagValue(args[4..], "--output") orelse "zig-out/installer";
+    const source_arg = try flagValue(args[4..], "--source");
+    const icon_arg = try flagValue(args[4..], "--icon");
+
+    // If no source is provided, run the existing package step first.
+    var source_path: []u8 = undefined;
+    var source_owned = false;
+    if (source_arg) |sp| {
+        source_path = try allocator.dupe(u8, sp);
+        source_owned = true;
+    } else {
+        const web_engine = try tooling.web_engine.resolve(.{ .web_engine = metadata.web_engine, .cef = metadata.cef }, .{});
+        const stats = try tooling.package.createPackage(allocator, io, .{
+            .metadata = metadata,
+            .target = .linux,
+            .output_path = output_dir,
+            .binary_path = null,
+            .assets_dir = if (metadata.frontend) |frontend| frontend.dist else "assets",
+            .frontend = metadata.frontend,
+            .web_engine = web_engine.engine,
+            .cef_dir = web_engine.cef_dir,
+        });
+        tooling.package.printDiagnostic(stats);
+        source_path = try std.fs.path.join(allocator, &.{ output_dir, metadata.id });
+        source_owned = true;
+    }
+    defer if (source_owned) allocator.free(source_path);
+
+    var icon_path_owned: ?[]u8 = null;
+    defer if (icon_path_owned) |p| allocator.free(p);
+    const icon_path = blk: {
+        if (icon_arg) |ip| {
+            icon_path_owned = try allocator.dupe(u8, ip);
+            break :blk icon_path_owned.?;
+        }
+        break :blk null;
+    };
+
+    const result = try tooling.installer.generate(allocator, io, .{
+        .kind = kind,
+        .source_path = source_path,
+        .output_dir = output_dir,
+        .app_id = metadata.id,
+        .app_name = if (metadata.name.len > 0) metadata.name else metadata.id,
+        .app_version = metadata.version,
+        .icon_path = icon_path,
+    });
+    defer result.deinit(allocator);
+
+    std.debug.print("created {s}\n", .{result.installer_path});
 }
 
 fn usage() void {
@@ -165,6 +248,7 @@ fn usage() void {
         \\  package-linux [--output path] [--binary path]
         \\  package-ios [--output path] [--binary path]
         \\  package-android [--output path] [--binary path]
+        \\  package-installer <msi|nsis|deb|appimage> [app.zon] [--output dir] [--source path] [--icon path]
         \\  automate <command>
         \\  skills list|get
         \\  plugins list|info <name>|create <name>

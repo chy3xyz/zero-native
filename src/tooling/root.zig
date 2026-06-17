@@ -5,6 +5,7 @@ pub const assets = @import("assets.zig");
 pub const codesign = @import("codesign.zig");
 pub const doctor = @import("doctor.zig");
 pub const package = @import("package.zig");
+pub const installer = @import("installer.zig");
 pub const dev = @import("dev.zig");
 pub const cef = @import("cef.zig");
 pub const web_engine = @import("web_engine.zig");
