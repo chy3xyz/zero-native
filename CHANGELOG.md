@@ -6,6 +6,7 @@ All notable changes to zero-native will be documented in this file.
 
 ### New Features
 
+- **Plugin scaffolding**: `zero-native plugins create <name>` subcommand that scaffolds a `plugin_<name>.zig` file with a complete module lifecycle, command dispatch, and passing test.
 - **Capabilities system**: Per-window structured capabilities with allow/deny scope globs for commands and paths, scoped `$APPDATA` / `$HOME` variables, and the `security.capabilities` manifest block to gate bridge commands and file access on a per-window basis.
 - **Content-Security-Policy injection**: Runtime-injected `<meta http-equiv="Content-Security-Policy">` tag for `.html` webview sources via `WebViewSource.htmlWithCsp`, with `security.csp_injected`, `security.csp_invalid`, and `security.csp_skipped` trace events for diagnostics.
 - **Bundled plugins**: Eleven reference plugins demonstrating common patterns: clipboard, shell, notification, http, deep-link, store, autostart, single-instance, updater, global-shortcut, and websocket.
