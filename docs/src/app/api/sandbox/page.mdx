@@ -1,0 +1,73 @@
+# API Reference: Sandbox
+
+The `sandbox` module describes a macOS App Sandbox configuration, derives the entitlement set, and emits the embedded plist the packager signs into the `.app` bundle. The manifest-level schema is documented in [App Sandbox](/sandbox).
+
+## MacOSSandbox
+
+```zig
+pub const MacOSSandbox = struct {
+    sandbox: bool = true,
+    network_client: bool = false, network_server: bool = false,
+    files_user_selected_read: bool = false, files_user_selected_write: bool = false,
+    file_read: []const []const u8 = &.{}, file_write: []const []const u8 = &.{},
+    camera: bool = false, microphone: bool = false, usb: bool = false, printing: bool = false,
+    allow_jit: bool = true,  // required for WebView/JS JIT
+    custom: bool = false,
+};
+```
+
+Setting `sandbox = false` produces no `com.apple.security.app-sandbox` entitlement. `allow_jit` defaults to `true` because the WebView and the JS JIT need it on macOS.
+
+## Entitlement
+
+```zig
+pub const Entitlement = struct {
+    key: []const u8,
+    value: Value,
+    pub const Value = union(enum) { boolean: bool, string: []const u8, array: []const []const u8 };
+};
+```
+
+`entitlements(sandbox, allocator)` returns the list implied by the configuration. `freeEntitlements(allocator, list)` releases the result. `toPlist` formats the entitlements as a signable plist document.
+
+```zig
+pub fn entitlements(sandbox: MacOSSandbox, allocator: std.mem.Allocator) ![]Entitlement;
+pub fn freeEntitlements(allocator: std.mem.Allocator, list: []Entitlement) void;
+pub fn toPlist(allocator: std.mem.Allocator, entitlement_list: []const Entitlement) ![]u8;
+pub fn validate(sandbox: MacOSSandbox) bool;
+```
+
+## Example
+
+```zig
+const sandbox = zero_native.security.sandbox.MacOSSandbox{
+    .sandbox = true, .network_client = true, .files_user_selected_read = true,
+    .allow_jit = true, .file_read = &.{ "$APPDATA/**" },
+};
+
+const entitlement_list = try sandbox.entitlements(allocator);
+defer sandbox.freeEntitlements(allocator, entitlement_list);
+
+const plist_xml = try sandbox.toPlist(allocator, entitlement_list);
+defer allocator.free(plist_xml);
+```
+
+The configuration above produces this plist excerpt:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.app-sandbox</key><true/>
+  <key>com.apple.security.network.client</key><true/>
+  <key>com.apple.security.files.user-selected.read-only</key><true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+  <key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+  <array><string>$APPDATA/**</string></array>
+</dict>
+</plist>
+```
+
+`$APPDATA` is a placeholder the packager expands to the app's sandbox container path at build time.
+
+See also: [App Sandbox](/sandbox), [Code Signing](/packaging/signing), [Security](/security).

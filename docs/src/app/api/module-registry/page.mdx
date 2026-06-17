@@ -1,0 +1,78 @@
+# API Reference: ModuleRegistry
+
+A `ModuleRegistry` is a flat list of `Module` values plus a small set of helpers for validation, lifecycle, and command dispatch. Plugins are the typical module producer; see [Extensions](/extensions) and [Bundled Plugins](/extensions/plugins) for the eleven reference plugins.
+
+## Module
+
+```zig
+pub const Module = struct {
+    info: ModuleInfo,
+    context: *anyopaque,
+    hooks: ModuleHooks = .{},
+};
+
+pub const ModuleInfo = struct {
+    id: ModuleId,
+    name: []const u8,
+    dependencies: []const ModuleId = &.{},
+    capabilities: []const Capability = &.{},
+};
+
+pub const ModuleHooks = struct {
+    start_fn:   ?*const fn (ctx: *anyopaque, rt: RuntimeContext) anyerror!void = null,
+    stop_fn:    ?*const fn (ctx: *anyopaque, rt: RuntimeContext) anyerror!void = null,
+    command_fn: ?*const fn (ctx: *anyopaque, rt: RuntimeContext, cmd: Command) anyerror!void = null,
+};
+```
+
+`context` is the plugin's private state; cast it back to your concrete type in each hook. Hooks are optional.
+
+## Command
+
+```zig
+pub const Command = struct {
+    name: []const u8,
+    target: ?ModuleId = null,    // null = broadcast to every module
+    payload: []const u8 = "",   // plugin-defined; commonly pipe-separated
+};
+```
+
+When `target` is set the registry routes the command to that one module; otherwise it is fanned out.
+
+## ModuleRegistry
+
+```zig
+pub const ModuleRegistry = struct {
+    modules: []const Module = &.{},
+
+    pub fn validate(self: ModuleRegistry) Error!void;
+    pub fn startAll(self: ModuleRegistry, runtime: RuntimeContext) Error!void;
+    pub fn stopAll(self: ModuleRegistry, runtime: RuntimeContext) Error!void;
+    pub fn dispatchCommand(self: ModuleRegistry, rt: RuntimeContext, cmd: Command) Error!void;
+    pub fn hasCapability(self: ModuleRegistry, kind: CapabilityKind) bool;
+    pub fn findById(self: ModuleRegistry, id: ModuleId) ?Module;
+};
+```
+
+`validate` rejects duplicate ids and dangling `dependencies` references. `startAll` calls `start_fn` in registration order; `stopAll` runs the reverse order. `dispatchCommand` either targets a single module or broadcasts. `hasCapability` asks "does any module provide this?". `findById` returns the module with a given numeric id.
+
+## CapabilityKind and RuntimeContext
+
+```zig
+pub const CapabilityKind = enum {
+    native_module, webview, js_bridge, filesystem, network, clipboard, custom,
+};
+
+pub const Capability = struct {
+    kind: CapabilityKind,
+    name: []const u8 = "",  // populated for .custom entries
+};
+
+pub const RuntimeContext = struct {
+    platform_name: []const u8,
+};
+```
+
+The kind mirrors the `capabilities` strings in `app.zon`. `custom` carries an extra `name` field that downstream code reads for routing. `RuntimeContext` is intentionally minimal; richer surfaces are added as hooks need them.
+
+See also: [Extensions](/extensions), [Bundled Plugins](/extensions/plugins), [Plugin: Clipboard](/extensions/plugins/clipboard).

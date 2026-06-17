@@ -167,6 +167,95 @@ var runtime = zero_native.Runtime.init(.{
 
 These map to the `capabilities` field in [app.zon](/app-zon). The runtime can query whether any module provides a given capability using `registry.hasCapability(.filesystem)`.
 
+## Registering a plugin in your app
+
+Every bundled plugin exposes a `create(allocator)` function that returns a `Module` value ready to drop into a `ModuleRegistry`. The pattern is the same whether the plugin lives in your `src/` tree or in a third-party package.
+
+```zig
+const std = @import("std");
+const zero_native = @import("zero_native");
+const plugin_clipboard = @import("zero_native/extensions/plugin_clipboard.zig");
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // 1. Build the module with the plugin's factory.
+    const clipboard_module = try plugin_clipboard.create(allocator);
+
+    // 2. Group it (and any others) into a registry.
+    const modules = [_]zero_native.extensions.Module{clipboard_module};
+    const registry = zero_native.extensions.ModuleRegistry{ .modules = &modules };
+    try registry.validate();
+
+    // 3. Hand the registry to the runtime.
+    var runtime = zero_native.Runtime.init(.{
+        .platform = my_platform,
+        .extensions = registry,
+    });
+    defer runtime.deinit();
+
+    try registry.startAll(runtime.context());
+    defer registry.stopAll(runtime.context());
+
+    try runtime.run();
+}
+```
+
+The `info` block on the module declares the plugin's identity and capabilities. Override it before registration if you need a different id, name, or a custom capability entry:
+
+```zig
+var clipboard_module = try plugin_clipboard.create(allocator);
+clipboard_module.info.id = 42;
+clipboard_module.info.name = "my-clipboard";
+clipboard_module.info.capabilities = &.{
+    .{ .kind = .clipboard, .name = "text" },
+};
+```
+
+### How the bridge dispatches a command
+
+When JavaScript calls `window.zero.invoke('clipboard.write_text', payload)`:
+
+1. The bridge looks up the command in the `CommandRegistry` declared in `app.zon`.
+2. It validates the call against the active window's [capabilities](/capabilities) (origin, scope, and policy).
+3. The bridge calls `registry.dispatchCommand(runtime, command)`, which fans the command out to every module whose `command_fn` is set.
+4. Plugins that own the command (matched by `info.id` or by name) handle it; others ignore it.
+
+### End-to-end: clipboard.write_text
+
+Install the plugin in your `main.zig` (snippet above) and declare its command in `app.zon`:
+
+```text
+.{
+    .name = "my-app",
+    .security = .{
+        .capabilities = .{
+            .clipboard = .{ .enabled = true },
+        },
+    },
+    .bridge = .{
+        .commands = .{
+            .{ .name = "clipboard.write_text", .module = "clipboard" },
+            .{ .name = "clipboard.read_text",  .module = "clipboard" },
+        },
+    },
+}
+```
+
+Then call it from the frontend:
+
+```javascript
+import { invoke } from "zero-native";
+
+await invoke("clipboard.write_text", "hello from the webview");
+const value = await invoke("clipboard.read_text", "");
+console.log(value);
+```
+
+See [Plugin: Clipboard](/extensions/plugins/clipboard) for the full lifecycle and [Bundled Plugins](/extensions/plugins) for the full list of available plugins.
+
 ## Native JS engine (experimental)
 
 The `js` module provides an abstraction layer for calling into a native JavaScript engine from Zig. This is separate from the WebView bridge and is intended for future native module integrations.

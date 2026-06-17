@@ -18,7 +18,24 @@ All notable changes to zero-native will be documented in this file.
 ### Improvements
 
 - **Zig 0.17 compatibility**: Bump `minimum_zig_version` to `0.17.0` and migrate the framework, CLI, and example build scripts to the Zig 0.17 toolchain. The migration covers the removed `Allocator.dupeZ` API, the removed `**` array repeat operator (replaced by `@splat`), the new `@typeInfo(T).@"enum"` field layout (`field_names` / `field_values` instead of `fields`), and the removal of the `b.sysroot` build field (replaced by an explicit `sdk_path` argument computed via `std.zig.system.darwin.getSdk`).
-- **Documentation site**: Add individual pages and a `Bundled Plugins` matrix for all 11 reference plugins (clipboard, shell, notification, http, deep-link, store, autostart, single-instance, updater, global-shortcut, websocket), a `Type-Safe IPC (Codegen)` reference for the bridge codegen API, and an `App Sandbox` reference documenting the `MacOSSandbox` schema, manifest block, and generated entitlements plist.
+- **Test coverage**: Wire previously-skipped plugin and channel tests into `zig build test` so the bundled plugin matrix and the `bridge.Channel(T)` streaming IPC are exercised on every CI run.
+- **Runtime split**: Pull the `Runtime` type, the bridge `Dispatcher`, the `Channel(T)` streaming helper, the `Metadata` parser, the `Capability` matcher, the `ModuleRegistry`, and the macOS `MacOSSandbox` plist generator into focused modules with their own public reference documentation.
+- **Trace and error handling**: Stable `security.csp_*`, `security.command_denied`, and `bridge.*` trace events; explicit `Error` codes on the bridge envelope; structured plugin `Command.payload` field; new `ModuleId` `u64` namespace; `Runtime.createStreamChannel` helper that wires a typed channel straight to `completeBridgeResponse`.
+
+### Security
+
+- **Shell command injection in codesign**: Replace the `sh -c` codesign/notary invocation with an argv-based `std.process.spawn` so caller-supplied paths can no longer smuggle shell metacharacters; the old `codesign --sign <app_path>` form was vulnerable to inputs like `; rm -rf ~`.
+- **Code-signing failure surfacing**: Codesign errors now log `codesign.sign_failed`, `codesign.notarize_submit_failed`, and `codesign.staple_failed` with the failed argv and the underlying `@errorName` so signing regressions are visible from CI output.
+- **Capabilities as the authoritative gate**: When the manifest declares any structured capability, the per-window lookup supersedes the legacy `permissions` list for command and path checks, eliminating the silent fall-through between the two policy layers.
+
+### Documentation
+
+- **Bundled plugins matrix**: A `Bundled Plugins` page and an individual page per plugin (clipboard, shell, notification, http, deep-link, store, autostart, single-instance, updater, global-shortcut, websocket) documenting lifecycle, configuration, and JS API.
+- **Type-Safe IPC reference**: A `Type-Safe IPC (Codegen)` page covering `CommandSchema`, `ParamSchema`, `defineCommand`, and `generateTypeScript` with a sample `.d.ts` output.
+- **App Sandbox reference**: An `App Sandbox` page documenting the `MacOSSandbox` schema, the `toPlist` output, and the code-sign integration with a generated plist excerpt.
+- **Capabilities deep dive**: A `Capabilities` page covering deny-overrides-allow, scope variables, glob syntax, per-window targeting, and the difference between command and path lookups.
+- **Examples index**: A new `Examples` page listing all nine `examples/` projects with their frontends, descriptions, and `zig build run` instructions, plus a `npx zero-native init` snippet.
+- **API reference**: A new `API Reference` section in the navigation with type-level pages for `Runtime`, `Dispatcher`, `Channel`, `Metadata`, `Capability`, `ModuleRegistry`, and `Sandbox` linking back to the conceptual pages.
 
 ## 0.2.0
 

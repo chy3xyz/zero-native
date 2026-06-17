@@ -1,0 +1,80 @@
+# API Reference: Metadata
+
+`Metadata` is the in-memory shape of a parsed `app.zon` file. It carries every field the tooling and runtime need: identity, permissions, structured capabilities, bridge command policies, frontend wiring, security, and the window table. See [Manifest Reference](/manifest) for the source-of-truth schema.
+
+## Metadata
+
+```zig
+pub const Metadata = struct {
+    id: []const u8,
+    name: []const u8,
+    display_name: ?[]const u8 = null,
+    version: []const u8,
+    icons: []const []const u8 = &.{},
+    platforms: []const []const u8 = &.{},
+    permissions: []const []const u8 = &.{},
+    feature_capabilities: []const []const u8 = &.{},
+    capabilities: []const capability.Capability = &.{},
+    bridge_commands: []const BridgeCommandMetadata = &.{},
+    web_engine: []const u8 = "system",
+    cef: web_engine_tool.CefConfig = .{},
+    frontend: ?FrontendMetadata = null,
+    security: SecurityMetadata = .{},
+    windows: []const WindowMetadata = &.{},
+
+    pub fn displayName(self: Metadata) []const u8;
+    pub fn deinit(self: Metadata, allocator: std.mem.Allocator) void;
+};
+```
+
+`displayName` returns `display_name` when set, otherwise `name`. `deinit` releases every heap-owned string and array on the value, including the deep fields of `capabilities`, `bridge_commands`, `frontend`, `security`, and `windows`.
+
+## SecurityMetadata
+
+```zig
+pub const SecurityMetadata = struct {
+    navigation: NavigationMetadata = .{},
+    sandbox: security_pkg.sandbox.MacOSSandbox = .{},
+};
+
+pub const NavigationMetadata = struct {
+    allowed_origins: []const []const u8 = &.{},
+    external_links: ExternalLinkMetadata = .{},
+};
+
+pub const ExternalLinkMetadata = struct {
+    action: []const u8 = "deny",
+    allowed_urls: []const []const u8 = &.{},
+};
+```
+
+## Window and bridge command
+
+```zig
+pub const WindowMetadata = struct {
+    label: []const u8 = "main",
+    title: ?[]const u8 = null,
+    width: f32 = 720,
+    height: f32 = 480,
+    x: ?f32 = null,
+    y: ?f32 = null,
+    restore_state: bool = true,
+};
+
+pub const BridgeCommandMetadata = struct {
+    name: []const u8,
+    permissions: []const []const u8 = &.{},
+    origins: []const []const u8 = &.{},
+};
+```
+
+## Ownership
+
+Every string, slice, and nested struct in `Metadata` is heap-allocated by the parser. Call `Metadata.deinit(allocator)` exactly once when you are done with the value. The helper is recursive; you do not need to walk into `capabilities` or `security` to free them.
+
+```zig
+const metadata = try tooling.manifest.readMetadata(allocator, io, "app.zon");
+defer metadata.deinit(allocator);
+```
+
+See also: [Manifest Reference](/manifest), [Capabilities](/capabilities), [App Sandbox](/sandbox).

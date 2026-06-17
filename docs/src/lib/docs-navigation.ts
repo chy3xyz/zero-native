@@ -14,6 +14,7 @@ export const navSections: NavSection[] = [
     items: [
       { name: "Introduction", href: "/" },
       { name: "Quick Start", href: "/quick-start" },
+      { name: "Examples", href: "/examples" },
       { name: "App Model", href: "/app-model" },
       { name: "Frontend Projects", href: "/frontend" },
     ],
@@ -62,6 +63,18 @@ export const navSections: NavSection[] = [
       { name: "Bundled Plugins", href: "/extensions/plugins" },
       { name: "Embedded App", href: "/embed" },
       { name: "Package Distribution", href: "/packages" },
+    ],
+  },
+  {
+    title: "API Reference",
+    items: [
+      { name: "Runtime", href: "/api/runtime" },
+      { name: "Dispatcher", href: "/api/dispatcher" },
+      { name: "Channel", href: "/api/channel" },
+      { name: "Metadata", href: "/api/metadata" },
+      { name: "Capability", href: "/api/capability" },
+      { name: "ModuleRegistry", href: "/api/module-registry" },
+      { name: "Sandbox", href: "/api/sandbox" },
     ],
   },
 ];
