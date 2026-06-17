@@ -13,6 +13,10 @@
 //! - "updater"
 //! - "global-shortcut"
 //! - "websocket"
+//! - "process"
+//! - "os"
+//! - "log"
+//! - "cli"
 //!
 //! Unknown names return `error.UnknownPlugin` so typos in `app.zon` are
 //! caught at load time.
@@ -23,10 +27,14 @@ const tooling = @import("tooling");
 
 const plugin_autostart = @import("plugin_autostart.zig");
 const plugin_clipboard = @import("plugin_clipboard.zig");
+const plugin_cli = @import("plugin_cli.zig");
 const plugin_deep_link = @import("plugin_deep_link.zig");
 const plugin_global_shortcut = @import("plugin_global_shortcut.zig");
 const plugin_http = @import("plugin_http.zig");
+const plugin_log = @import("plugin_log.zig");
 const plugin_notification = @import("plugin_notification.zig");
+const plugin_os = @import("plugin_os.zig");
+const plugin_process = @import("plugin_process.zig");
 const plugin_shell = @import("plugin_shell.zig");
 const plugin_single_instance = @import("plugin_single_instance.zig");
 const plugin_store = @import("plugin_store.zig");
@@ -163,6 +171,14 @@ fn createPlugin(
         return plugin_global_shortcut.create(allocator, io);
     } else if (std.mem.eql(u8, name, "websocket")) {
         return plugin_websocket.create(allocator);
+    } else if (std.mem.eql(u8, name, "process")) {
+        return plugin_process.create(allocator);
+    } else if (std.mem.eql(u8, name, "os")) {
+        return plugin_os.create(allocator);
+    } else if (std.mem.eql(u8, name, "log")) {
+        return plugin_log.create(allocator);
+    } else if (std.mem.eql(u8, name, "cli")) {
+        return plugin_cli.create(allocator);
     }
     return error.UnknownPlugin;
 }

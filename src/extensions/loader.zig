@@ -104,6 +104,14 @@ fn createPlugin(
         return @import("plugin_global_shortcut.zig").create(allocator, io);
     } else if (std.mem.eql(u8, name, "websocket")) {
         return @import("plugin_websocket.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "process")) {
+        return @import("plugin_process.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "os")) {
+        return @import("plugin_os.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "log")) {
+        return @import("plugin_log.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "cli")) {
+        return @import("plugin_cli.zig").create(allocator);
     }
     return error.UnknownPlugin;
 }

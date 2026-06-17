@@ -140,6 +140,9 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, command, "updater")) {
         const code = try tooling.updater_cli.run(init.io, allocator, args[2..]);
         if (code != 0) std.process.exit(code);
+    } else if (std.mem.eql(u8, command, "localhost")) {
+        const code = tooling.localhost_cli.runCli(init.io, allocator, args[2..]);
+        if (code != 0) std.process.exit(code);
     } else if (std.mem.eql(u8, command, "audit")) {
         const code = try tooling.audit.run(allocator, init.io, args[2..]);
         if (code != 0) std.process.exit(code);
@@ -256,6 +259,7 @@ fn usage() void {
         \\  skills list|get
         \\  plugins list|info <name>|create <name>
         \\  updater sign|verify --key|--pubkey ... --input ... --output|--sig ...
+        \\  localhost [--port N] [--timeout-ms N] [--text]
         \\  audit [app.zon]                    (exits 0 info, 1 warn, 2 error)
         \\  version
         \\

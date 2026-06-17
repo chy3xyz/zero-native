@@ -20,6 +20,10 @@ test {
     _ = @import("plugin_updater.zig");
     _ = @import("plugin_global_shortcut.zig");
     _ = @import("plugin_websocket.zig");
+    _ = @import("plugin_process.zig");
+    _ = @import("plugin_os.zig");
+    _ = @import("plugin_log.zig");
+    _ = @import("plugin_cli.zig");
     _ = @import("http_client.zig");
     _ = @import("registry.zig");
     _ = @import("loader_test.zig");
@@ -28,7 +32,6 @@ test {
 // All-plugins compatibility check. Instantiates every bundled plugin, packs
 // them into a single `ModuleRegistry`, and verifies:
 //
-// - the registry has exactly eleven modules
 // - every `ModuleId` is unique (no two plugins collide)
 // - `validate` accepts the full set (no duplicate ids, dependencies resolve)
 // - every plugin's `start_fn` runs without error
@@ -36,7 +39,7 @@ test {
 //
 // Uses `std.testing.allocator` so any leak in a plugin's `create`/`stop`
 // pairing surfaces as a test failure.
-test "all 11 plugins register without conflicts" {
+test "all bundled plugins register without conflicts" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
@@ -52,8 +55,12 @@ test "all 11 plugins register without conflicts" {
     const updater = @import("plugin_updater.zig");
     const global_shortcut = @import("plugin_global_shortcut.zig");
     const websocket = @import("plugin_websocket.zig");
+    const process_mod = @import("plugin_process.zig");
+    const os_mod = @import("plugin_os.zig");
+    const log_mod = @import("plugin_log.zig");
+    const cli_mod = @import("plugin_cli.zig");
 
-    var modules: [11]extensions.Module = undefined;
+    var modules: [15]extensions.Module = undefined;
 
     modules[0] = try clipboard.create(allocator);
     modules[1] = try shell.create(allocator);
@@ -69,6 +76,10 @@ test "all 11 plugins register without conflicts" {
     modules[8] = try updater.create(allocator, io, "0.0.0", "http://localhost/manifest.json", "");
     modules[9] = try global_shortcut.create(allocator, io);
     modules[10] = try websocket.create(allocator);
+    modules[11] = try process_mod.create(allocator);
+    modules[12] = try os_mod.create(allocator);
+    modules[13] = try log_mod.create(allocator);
+    modules[14] = try cli_mod.create(allocator);
 
     // Walk modules in reverse on failure so each `create`'s allocation
     // (and the state struct) is paired with a matching `stop_fn`. We
@@ -82,27 +93,24 @@ test "all 11 plugins register without conflicts" {
         }
     }
 
-    // 1. Registry has exactly eleven modules.
-    try std.testing.expectEqual(@as(usize, 11), modules.len);
-
     const registry = extensions.ModuleRegistry{ .modules = &modules };
 
-    // 2. No duplicate ModuleIds and every declared dependency resolves.
+    // No duplicate ModuleIds and every declared dependency resolves.
     try registry.validate();
 
-    // 3. Every plugin's start hook is a no-op that still returns success.
+    // Every plugin's start hook is a no-op that still returns success.
     for (modules) |module| {
         try module.hooks.start_fn.?(module.context, runtime);
     }
 
-    // 4. Every advertised capability kind is observable from the registry.
+    // Every advertised capability kind is observable from the registry.
     for (modules) |module| {
         for (module.info.capabilities) |capability| {
             try std.testing.expect(registry.hasCapability(capability.kind));
         }
     }
 
-    // 5. ModuleIds are pairwise unique.
+    // ModuleIds are pairwise unique.
     for (modules, 0..) |module, index| {
         for (modules[0..index]) |previous| {
             try std.testing.expect(previous.info.id != module.info.id);
