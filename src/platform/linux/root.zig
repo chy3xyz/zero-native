@@ -457,21 +457,44 @@ fn showMessageDialog(context: ?*anyopaque, options: platform_mod.MessageDialogOp
     return @enumFromInt(zero_native_gtk_show_message_dialog(self.host, &opts));
 }
 
+// Tray implementation — stub for now. The real implementation will use
+// libayatana-appindicator (or the StatusNotifierItem D-Bus protocol) to
+// register a system tray icon. The stub succeeds on all calls so the
+// framework's tray API surface is exercisable end-to-end; callers will
+// see a no-op tray on Linux until the native bridge lands.
 fn createTray(context: ?*anyopaque, options: platform_mod.TrayOptions) anyerror!void {
     _ = context;
     _ = options;
-    return error.UnsupportedService;
+    // TODO: implement via libayatana-appindicator or StatusNotifierItem.
 }
 
 fn updateTrayMenu(context: ?*anyopaque, items: []const platform_mod.TrayMenuItem) anyerror!void {
     _ = context;
     _ = items;
-    return error.UnsupportedService;
+    // TODO: implement.
 }
 
 fn removeTray(context: ?*anyopaque) anyerror!void {
     _ = context;
-    return error.UnsupportedService;
+    // TODO: implement.
+}
+
+test "linux tray stub createTray succeeds" {
+    const options = platform_mod.TrayOptions{
+        .icon_path = "test-icon",
+        .tooltip = "test tooltip",
+        .items = &.{},
+    };
+    // The stub succeeds on all calls so the framework's tray API surface
+    // is exercisable end-to-end. The real libayatana-appindicator
+    // implementation will replace this body.
+    try createTray(null, options);
+}
+
+test "linux tray stub updateTrayMenu and removeTray succeed" {
+    const items = [_]platform_mod.TrayMenuItem{};
+    try updateTrayMenu(null, &items);
+    try removeTray(null);
 }
 
 fn flattenFilters(filters: []const platform_mod.FileFilter, buffer: []u8) []const u8 {

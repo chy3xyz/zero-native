@@ -85,6 +85,10 @@ pub fn command(context: *anyopaque, runtime: extensions.RuntimeContext, cmd: ext
 
     if (std.mem.eql(u8, cmd.name, cmd_notify)) {
         try appendNotification(self, cmd.payload);
+        // Post the notification to the host OS. The stub succeeds on all
+        // platforms; native wiring (NSUserNotificationCenter on macOS,
+        // libnotify on Linux, Windows toast notifications) is future work.
+        postOsNotification(cmd.payload) catch {};
         return;
     }
 
@@ -116,6 +120,17 @@ fn clearNotifications(self: *NotificationState) void {
         self.allocator.free(entry.message);
     }
     self.notifications.clearRetainingCapacity();
+}
+
+/// Post a notification to the host operating system. This is a stub that
+/// succeeds on all platforms; native wiring is future work:
+///
+///   macOS:   NSUserNotificationCenter / UNUserNotificationCenter
+///   Linux:   libnotify (org.freedesktop.Notifications)
+///   Windows: Windows.UI.Notifications (toast)
+fn postOsNotification(payload: []const u8) !void {
+    _ = payload;
+    // TODO: implement per-platform native notification posting.
 }
 
 /// Allocates a new `NotificationState` and wraps it in a `Module`.

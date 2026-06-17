@@ -101,7 +101,7 @@ fn createPlugin(
     } else if (std.mem.eql(u8, name, "updater")) {
         return @import("plugin_updater.zig").create(allocator, io, config.current_version, config.manifest_url, config.public_key_b64);
     } else if (std.mem.eql(u8, name, "global-shortcut")) {
-        return @import("plugin_global_shortcut.zig").create(allocator);
+        return @import("plugin_global_shortcut.zig").create(allocator, io);
     } else if (std.mem.eql(u8, name, "websocket")) {
         return @import("plugin_websocket.zig").create(allocator);
     }
