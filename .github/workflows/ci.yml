@@ -54,6 +54,42 @@ jobs:
       - name: zig build test
         run: zig build test
 
+  audit:
+    name: Audit app.zon
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v0.1
+        with:
+          version: 0.17.0-dev.813+2153f8143
+          cache: true
+
+      - name: zig build
+        run: zig build
+
+      # `zero-native audit` exits 0 for info-only manifests, 1 when
+      # warnings are reported, and 2 when blocking errors are found. We
+      # treat exit 0 and 1 as success (warn is non-blocking) and only
+      # fail the job on exit 2 (audit errors).
+      - name: Run zero-native audit
+        run: |
+          set +e
+          ./zig-out/bin/zero-native audit app.zon
+          code=$?
+          set -e
+          if [ "$code" -eq 2 ]; then
+            echo "::error::zero-native audit reported blocking errors (exit code 2)"
+            exit 2
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::warning::zero-native audit reported warnings (exit code $code)"
+          fi
+          exit 0
+
   docs:
     name: Docs build
     runs-on: ubuntu-latest

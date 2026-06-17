@@ -22,6 +22,7 @@ test {
     _ = @import("plugin_websocket.zig");
     _ = @import("http_client.zig");
     _ = @import("registry.zig");
+    _ = @import("loader_test.zig");
 }
 
 // All-plugins compatibility check. Instantiates every bundled plugin, packs

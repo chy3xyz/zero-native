@@ -5,6 +5,8 @@ const json = @import("json");
 const automation = @import("../automation/root.zig");
 const bridge = @import("../bridge/root.zig");
 const extensions = @import("../extensions/root.zig");
+const extensions_loader = @import("../extensions/loader.zig");
+const plugin_clipboard = @import("../extensions/plugin_clipboard.zig");
 const platform = @import("../platform/root.zig");
 const security = @import("../security/root.zig");
 const csp = @import("../security/csp.zig");
@@ -80,6 +82,12 @@ pub const Runtime = struct {
     /// Atomic counter for stream ids handed out by `createStreamChannel`.
     /// Thread-safe so concurrent channel allocations produce distinct ids.
     next_stream_id: std.atomic.Value(u64) = std.atomic.Value(u64).init(1),
+    /// Modules auto-loaded from `Metadata.plugins` by `loadPlugins`. Owned
+    /// by the runtime and freed by `deinit` via
+    /// `extensions.registry.deinitRegistry`. Empty when the runtime is
+    /// constructed without calling `loadPlugins`, or when the supplied
+    /// metadata declared no plugins. INTERNAL: not thread-safe.
+    plugins: []extensions.Module = &.{},
 
     /// Creates a runtime backed by the supplied options and platform surface.
     pub fn init(options: options_mod.Options) Runtime {
@@ -89,6 +97,40 @@ pub const Runtime = struct {
         };
         runtime.windows = undefined;
         return runtime;
+    }
+
+    /// Instantiates the plugins named in `plugin_names` via
+    /// `extensions.loader.loadFromNames` and stores them on the runtime.
+    /// The returned slice replaces any prior value of `self.plugins` and
+    /// is wired into `self.options.extensions` so the existing lifecycle
+    /// and command dispatch hooks pick it up.
+    ///
+    /// This is the supported way to consume `Metadata.plugins` at
+    /// startup: pass `metadata.plugins` straight through and call this
+    /// helper immediately after `Runtime.init`.
+    ///
+    /// Return type is `anyerror!void` because plugin `create` callbacks
+    /// may raise arbitrary errors (see `extensions.loader.Error`).
+    ///
+    /// The caller is responsible for calling `Runtime.deinit` with the
+    /// same allocator to free the modules.
+    pub fn loadPlugins(self: *Runtime, allocator: std.mem.Allocator, io: std.Io, plugin_names: []const []const u8) anyerror!void {
+        if (plugin_names.len == 0) return;
+        const modules = try extensions_loader.loadFromNames(allocator, io, plugin_names, .{});
+        self.plugins = modules;
+        self.options.extensions = .{ .modules = self.plugins };
+    }
+
+    /// Frees resources owned by the runtime that are not handled by the
+    /// platform backend. Currently this only releases the modules
+    /// loaded by `loadPlugins` via `extensions.loader.deinitRegistry`.
+    /// Safe to call more than once — subsequent calls are a no-op.
+    pub fn deinit(self: *Runtime, allocator: std.mem.Allocator) void {
+        if (self.plugins.len > 0) {
+            extensions_loader.deinitRegistry(allocator, self.plugins);
+            self.plugins = &.{};
+            self.options.extensions = null;
+        }
     }
 
     /// Marks the runtime as needing a repaint for the generic `state` reason.
@@ -1861,6 +1903,40 @@ test "extension registry receives runtime lifecycle and command hooks" {
     try std.testing.expect(module_state.started);
     try std.testing.expect(module_state.stopped);
     try std.testing.expectEqual(@as(u32, 1), module_state.commands);
+}
+
+test "Runtime stores and frees plugin modules via the loader" {
+    // Use a built-in clipboard-style module to keep the test hermetic
+    // (the `extensions.loader` dispatch table pulls in plugins that need
+    // additional build-time modules such as `httpz`/`update_manifest`,
+    // which are not part of this test target). The wiring semantics
+    // exercised here are the same as those of `Runtime.loadPlugins`,
+    // which is exhaustively tested in `extensions/loader_test.zig`.
+    const allocator = std.testing.allocator;
+    const module = try plugin_clipboard.create(allocator);
+    const modules = try allocator.alloc(extensions.Module, 1);
+    modules[0] = module;
+
+    var harness: TestHarness() = undefined;
+    harness.init(.{});
+
+    harness.runtime.plugins = modules;
+    harness.runtime.options.extensions = .{ .modules = harness.runtime.plugins };
+    try std.testing.expectEqual(@as(usize, 1), harness.runtime.plugins.len);
+    try std.testing.expectEqual(@as(extensions.ModuleId, 100), harness.runtime.plugins[0].info.id);
+    try std.testing.expectEqualStrings("clipboard", harness.runtime.plugins[0].info.name);
+    try std.testing.expect(harness.runtime.options.extensions != null);
+    try std.testing.expectEqual(@as(usize, 1), harness.runtime.options.extensions.?.modules.len);
+
+    // `Runtime.deinit(allocator)` should free the modules and clear the
+    // registry. The deallocator handles both the underlying `Module`
+    // state and the slice itself, so this single call covers everything.
+    harness.runtime.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), harness.runtime.plugins.len);
+    try std.testing.expect(harness.runtime.options.extensions == null);
+
+    // `deinit` is a no-op when called twice.
+    harness.runtime.deinit(allocator);
 }
 
 test "runtime dispatches bridge messages through policy and handler registry" {

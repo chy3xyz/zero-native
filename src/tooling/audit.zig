@@ -49,7 +49,28 @@ pub const Report = struct {
     pub fn hasErrors(self: Report) bool {
         return self.count(.@"error") > 0;
     }
+
+    /// Returns the highest severity present in the report, or `.info` if
+    /// there are no findings. Mirrors `severityExitCode` so callers can
+    /// branch on either the tag or the numeric exit code.
+    pub fn highestSeverity(self: Report) Severity {
+        if (self.hasErrors()) return .@"error";
+        if (self.count(.warn) > 0) return .warn;
+        return .info;
+    }
 };
+
+/// Maps a single severity to a process exit code. `info` exits 0 so a
+/// manifest with only informational findings is considered clean;
+/// `warn` exits 1 to surface non-blocking issues; `@"error"` exits 2 to
+/// signal blocking findings that should fail CI.
+pub fn severityExitCode(severity: Severity) u8 {
+    return switch (severity) {
+        .info => 0,
+        .warn => 1,
+        .@"error" => 2,
+    };
+}
 
 const Ctx = struct {
     allocator: std.mem.Allocator,
@@ -121,7 +142,7 @@ fn printReport(report: Report) void {
     }
     for (report.findings) |finding| {
         const prefix: []const u8 = switch (finding.severity) {
-            .info => "[*]",
+            .info => "[i]",
             .warn => "[!]",
             .@"error" => "[X]",
         };
@@ -145,22 +166,33 @@ fn usage() void {
         \\Reads the manifest and reports production-readiness findings.
         \\Defaults to ./app.zon.
         \\
+        \\Exits 0 when only info findings are reported, 1 when warnings
+        \\are present, and 2 when blocking errors are found.
+        \\
     , .{});
 }
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) !void {
+/// Runs the audit against `manifest_path`, prints the findings, and
+/// returns the highest-severity exit code (0/1/2). `args` is accepted
+/// for symmetry with `run` and is reserved for future flags.
+pub fn auditRun(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, manifest_path: []const u8) !u8 {
+    _ = args;
+    var report = try audit(allocator, io, manifest_path);
+    defer report.deinit(allocator);
+    printReport(report);
+    return severityExitCode(report.highestSeverity());
+}
+
+pub fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) !u8 {
     var path: []const u8 = "app.zon";
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             usage();
-            return;
+            return 0;
         }
         path = arg;
     }
-    var report = try audit(allocator, io, path);
-    defer report.deinit(allocator);
-    printReport(report);
-    if (report.hasErrors()) return error.AuditFailed;
+    return auditRun(allocator, io, args, path);
 }
 
 const auditFixture =
@@ -301,4 +333,16 @@ test "Report.deinit frees all findings" {
     var report = Report{ .findings = &.{} };
     report.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), report.findings.len);
+}
+
+test "severityExitCode maps info to 0" {
+    try std.testing.expectEqual(@as(u8, 0), severityExitCode(.info));
+}
+
+test "severityExitCode maps warn to 1" {
+    try std.testing.expectEqual(@as(u8, 1), severityExitCode(.warn));
+}
+
+test "severityExitCode maps error to 2" {
+    try std.testing.expectEqual(@as(u8, 2), severityExitCode(.@"error"));
 }
