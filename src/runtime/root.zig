@@ -7,9 +7,9 @@ const bridge = @import("../bridge/root.zig");
 const extensions = @import("../extensions/root.zig");
 const extensions_loader = @import("../extensions/loader.zig");
 const plugin_clipboard = @import("../extensions/plugin_clipboard.zig");
-const platform = @import("../platform/root.zig");
-const security = @import("../security/root.zig");
-const csp = @import("../security/csp.zig");
+const platform = @import("platform");
+const security = @import("security");
+const csp = security.csp;
 const window_state = @import("../window_state/root.zig");
 
 const event_mod = @import("event.zig");
@@ -99,6 +99,15 @@ pub const Runtime = struct {
         return runtime;
     }
 
+    /// Options for `loadPlugins`.
+    pub const LoadPluginsOptions = struct {
+        /// Out-of-tree plugins that can be referenced by name from
+        /// `plugin_names` alongside the built-in plugins.
+        custom_plugins: []const extensions.Plugin = &.{},
+        /// Plugin-specific configuration forwarded to the extension loader.
+        config: extensions_loader.PluginConfig = .{},
+    };
+
     /// Instantiates the plugins named in `plugin_names` via
     /// `extensions.loader.loadFromNames` and stores them on the runtime.
     /// The returned slice replaces any prior value of `self.plugins` and
@@ -114,9 +123,22 @@ pub const Runtime = struct {
     ///
     /// The caller is responsible for calling `Runtime.deinit` with the
     /// same allocator to free the modules.
-    pub fn loadPlugins(self: *Runtime, allocator: std.mem.Allocator, io: std.Io, plugin_names: []const []const u8) anyerror!void {
-        if (plugin_names.len == 0) return;
-        const modules = try extensions_loader.loadFromNames(allocator, io, plugin_names, .{});
+    pub fn loadPlugins(
+        self: *Runtime,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        plugin_names: []const []const u8,
+        options: LoadPluginsOptions,
+    ) anyerror!void {
+        if (plugin_names.len == 0 and options.custom_plugins.len == 0 and options.config.custom_plugins.len == 0) return;
+        const modules = try extensions_loader.loadFromNames(allocator, io, plugin_names, .{
+            .app_name = options.config.app_name,
+            .current_version = options.config.current_version,
+            .manifest_url = options.config.manifest_url,
+            .public_key_b64 = options.config.public_key_b64,
+            .check_on_start = options.config.check_on_start,
+            .custom_plugins = options.custom_plugins,
+        });
         self.plugins = modules;
         self.options.extensions = .{ .modules = self.plugins };
     }
@@ -1373,7 +1395,10 @@ pub const Runtime = struct {
     }
 
     fn extensionContext(self: *Runtime) extensions.RuntimeContext {
-        return .{ .platform_name = self.options.platform.name };
+        return .{
+            .platform_name = self.options.platform.name,
+            .services = @ptrCast(&self.options.platform.services),
+        };
     }
 
     fn nextTimestamp(self: *Runtime) trace.Timestamp {

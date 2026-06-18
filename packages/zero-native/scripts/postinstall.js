@@ -33,7 +33,7 @@ const packageJson = JSON.parse(
 );
 const version = packageJson.version;
 
-const GITHUB_REPO = 'vercel-labs/zero-native';
+const GITHUB_REPO = 'chy3xyz/zero-native';
 const DOWNLOAD_URL = `https://github.com/${GITHUB_REPO}/releases/download/v${version}/${binaryName}`;
 const CHECKSUMS_URL = `https://github.com/${GITHUB_REPO}/releases/download/v${version}/CHECKSUMS.txt`;
 

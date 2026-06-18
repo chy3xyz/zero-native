@@ -41,6 +41,31 @@ The bridge carries two frame kinds: `value` (a serialized `T`) and `end` (the em
 {"stream":1,"kind":"end","payload":""}
 ```
 
+## Subscribing from JavaScript / TypeScript
+
+The frontend receives stream frames through the same bridge response path as `invoke`. Use `window.zero.channels.open(id, handler)` to attach a typed handler:
+
+```typescript
+import type { ZeroNativeChannelHandler } from "zero-native";
+
+const channel = window.zero.channels.open<number>(42, {
+  onValue(value) {
+    console.log("progress:", value);
+  },
+  onEnd() {
+    console.log("stream closed");
+  },
+  onError(error) {
+    console.error("stream error:", error);
+  },
+});
+
+// Stop listening at any time:
+channel.close();
+```
+
+The handler object must provide `onValue`. `onEnd` and `onError` are optional. The returned channel object has an `id` and a `close()` method that only unsubscribes the client side; the Zig runtime must still call `channel.close()` to emit the end frame.
+
 ## Low-level encoder
 
 ```zig

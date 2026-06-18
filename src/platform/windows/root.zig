@@ -2,7 +2,7 @@ const std = @import("std");
 const geometry = @import("geometry");
 const platform_mod = @import("../root.zig");
 const policy_values = @import("../policy_values.zig");
-const security = @import("../../security/root.zig");
+const security = @import("security");
 
 pub const Error = error{
     CallbackFailed,
@@ -124,6 +124,7 @@ pub const WindowsPlatform = struct {
                 .set_webview_zoom_fn = setWebViewZoom,
                 .set_webview_layer_fn = setWebViewLayer,
                 .close_webview_fn = closeWebView,
+                .show_notification_fn = showNotification,
                 .configure_security_policy_fn = configureSecurityPolicy,
                 .emit_window_event_fn = emitWindowEvent,
             },
@@ -348,6 +349,15 @@ fn configureSecurityPolicy(context: ?*anyopaque, policy: security.Policy) anyerr
         external_urls.len,
         @intFromEnum(policy.navigation.external_links.action),
     );
+}
+
+fn showNotification(context: ?*anyopaque, options: platform_mod.NotificationOptions) anyerror!void {
+    _ = context;
+    _ = options;
+    // Windows native notifications require WinRT ToastNotification or
+    // Shell_NotifyIcon balloon tips, neither of which is wired yet. The
+    // caller should fall back to in-memory logging.
+    return error.UnsupportedService;
 }
 
 test "windows platform module exports type" {

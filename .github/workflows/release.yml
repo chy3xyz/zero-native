@@ -79,9 +79,34 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  validate:
+    name: Validate native build
+    needs: check-release
+    if: needs.check-release.outputs.needs_github_release == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build zero-native app (macOS)
+        id: build-zero-native
+        uses: ./.github/actions/build-zero-native-app
+        with:
+          app-path: .
+          target: aarch64-macos
+          platform: macos
+          binary-name: zero-native
+
+      - name: Print built binary
+        shell: bash
+        run: echo "Built ${{ steps.build-zero-native.outputs.binary }}"
+
   github-release:
     name: Create GitHub Release
-    needs: check-release
+    needs: [check-release, validate]
     if: needs.check-release.outputs.needs_github_release == 'true'
     runs-on: macos-14
     timeout-minutes: 10
@@ -94,7 +119,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0-dev.813+2153f8143
 
       - name: Extract changelog entry
         run: |

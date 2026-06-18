@@ -239,6 +239,17 @@ try channel.close();   // {"stream":1,"kind":"end","payload":""}
 
 The runtime provides `createStreamChannel` as a convenience for wiring channels through the platform bridge. The function allocates a fresh `StreamId` and returns a `bridge.Channel(T)` whose writer automatically routes frames to `completeBridgeResponse` for the target window and webview. Until this helper is fully implemented, callers can construct a `bridge.Channel(T)` directly with a writer that calls their own bridge response path — the channel module tests demonstrate the full round-trip.
 
+### Consuming a channel from JavaScript
+
+Use the typed `window.zero.channels.open(id, handler)` API. The runtime sends value frames and a final end frame; the handler receives them through `onValue` and `onEnd`:
+
+```typescript
+const channel = window.zero.channels.open<number>(streamId, {
+  onValue(value) { console.log(value); },
+  onEnd() { console.log("done"); },
+});
+```
+
 ### Wire protocol summary
 
 ```

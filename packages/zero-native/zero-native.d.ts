@@ -153,6 +153,38 @@ export interface ZeroNativeMessageDialogOptions {
   tertiaryButton?: string;
 }
 
+export type ZeroNativeCapabilityKind =
+  | "native_module"
+  | "webview"
+  | "js_bridge"
+  | "filesystem"
+  | "network"
+  | "clipboard"
+  | "custom";
+
+export interface ZeroNativeCapability {
+  kind: ZeroNativeCapabilityKind;
+  name?: string;
+}
+
+export interface ZeroNativeModule {
+  id: number;
+  name: string;
+  capabilities?: ZeroNativeCapability[];
+  dependencies?: number[];
+}
+
+export interface ZeroNativeChannelHandler<T = ZeroNativeJson> {
+  onValue(value: T): void;
+  onEnd?: () => void;
+  onError?: (error: Error) => void;
+}
+
+export interface ZeroNativeChannel<T = ZeroNativeJson> {
+  readonly id: number;
+  close(): void;
+}
+
 export interface ZeroNativeApi {
   invoke<T = ZeroNativeJson>(command: string, payload?: ZeroNativeJson): Promise<T>;
   on<T = ZeroNativeJson>(name: string, callback: (detail: T) => void): () => void;
@@ -177,6 +209,13 @@ export interface ZeroNativeApi {
     openFile(options?: ZeroNativeOpenFileOptions): Promise<string[] | null>;
     saveFile(options?: ZeroNativeSaveFileOptions): Promise<string | null>;
     showMessage(options?: ZeroNativeMessageDialogOptions): Promise<"primary" | "secondary" | "tertiary">;
+  };
+  /** Open a typed streaming channel created by the Zig runtime. */
+  channels: {
+    open<T = ZeroNativeJson>(
+      id: number,
+      handler: ZeroNativeChannelHandler<T>,
+    ): ZeroNativeChannel<T>;
   };
 }
 

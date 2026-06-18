@@ -1083,33 +1083,78 @@ fn macosInfoPlist(allocator: std.mem.Allocator, metadata: manifest_tool.Metadata
     defer allocator.free(icon);
     const version = try xmlEscapeAlloc(allocator, metadata.version);
     defer allocator.free(version);
-    return std.fmt.allocPrint(allocator,
+
+    var buf = std.ArrayList(u8).empty;
+    try buf.appendSlice(allocator,
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         \\<plist version="1.0">
         \\<dict>
         \\  <key>CFBundleIdentifier</key>
-        \\  <string>{s}</string>
-        \\  <key>CFBundleName</key>
-        \\  <string>{s}</string>
-        \\  <key>CFBundleDisplayName</key>
-        \\  <string>{s}</string>
-        \\  <key>CFBundleExecutable</key>
-        \\  <string>{s}</string>
-        \\  <key>CFBundleIconFile</key>
-        \\  <string>{s}</string>
+        \\
+    );
+    try buf.appendSlice(allocator, "  <string>");
+    try buf.appendSlice(allocator, bundle_id);
+    try buf.appendSlice(allocator, "</string>\n");
+
+    try buf.appendSlice(allocator, "  <key>CFBundleName</key>\n  <string>");
+    try buf.appendSlice(allocator, name);
+    try buf.appendSlice(allocator, "</string>\n");
+
+    try buf.appendSlice(allocator, "  <key>CFBundleDisplayName</key>\n  <string>");
+    try buf.appendSlice(allocator, display_name);
+    try buf.appendSlice(allocator, "</string>\n");
+
+    try buf.appendSlice(allocator, "  <key>CFBundleExecutable</key>\n  <string>");
+    try buf.appendSlice(allocator, executable);
+    try buf.appendSlice(allocator, "</string>\n");
+
+    try buf.appendSlice(allocator, "  <key>CFBundleIconFile</key>\n  <string>");
+    try buf.appendSlice(allocator, icon);
+    try buf.appendSlice(allocator, "</string>\n");
+
+    try buf.appendSlice(allocator,
         \\  <key>CFBundlePackageType</key>
         \\  <string>APPL</string>
         \\  <key>LSMinimumSystemVersion</key>
         \\  <string>11.0</string>
         \\  <key>CFBundleShortVersionString</key>
-        \\  <string>{s}</string>
-        \\  <key>CFBundleVersion</key>
-        \\  <string>{s}</string>
-        \\</dict>
-        \\</plist>
         \\
-    , .{ bundle_id, name, display_name, executable, icon, version, version });
+    );
+    try buf.appendSlice(allocator, "  <string>");
+    try buf.appendSlice(allocator, version);
+    try buf.appendSlice(allocator, "</string>\n");
+
+    try buf.appendSlice(allocator, "  <key>CFBundleVersion</key>\n  <string>");
+    try buf.appendSlice(allocator, version);
+    try buf.appendSlice(allocator, "</string>\n");
+
+    // URL types for deep-link schemes
+    if (metadata.deep_link_schemes.len > 0) {
+        try buf.appendSlice(allocator,
+            \\  <key>CFBundleURLTypes</key>
+            \\  <array>
+            \\    <dict>
+            \\      <key>CFBundleURLName</key>
+            \\
+        );
+        try buf.appendSlice(allocator, "      <string>");
+        try buf.appendSlice(allocator, bundle_id);
+        try buf.appendSlice(allocator, "</string>\n");
+
+        try buf.appendSlice(allocator, "      <key>CFBundleURLSchemes</key>\n      <array>\n");
+        for (metadata.deep_link_schemes) |scheme| {
+            const escaped = try xmlEscapeAlloc(allocator, scheme);
+            defer allocator.free(escaped);
+            try buf.appendSlice(allocator, "        <string>");
+            try buf.appendSlice(allocator, escaped);
+            try buf.appendSlice(allocator, "</string>\n");
+        }
+        try buf.appendSlice(allocator, "      </array>\n    </dict>\n  </array>\n");
+    }
+
+    try buf.appendSlice(allocator, "</dict>\n</plist>\n");
+    return buf.toOwnedSlice(allocator);
 }
 
 fn embedHeader() []const u8 {
@@ -1918,16 +1963,34 @@ fn linuxDesktopEntry(allocator: std.mem.Allocator, metadata: manifest_tool.Metad
     defer allocator.free(display_name);
     const executable = try desktopEntryEscapeAlloc(allocator, metadata.name);
     defer allocator.free(executable);
-    return std.fmt.allocPrint(allocator,
+
+    var buf = std.ArrayList(u8).empty;
+    try buf.appendSlice(allocator,
         \\[Desktop Entry]
         \\Type=Application
-        \\Name={s}
-        \\Exec={s}
-        \\Icon=app-icon
-        \\Categories=Utility;
-        \\Comment={s} desktop application
         \\
-    , .{ display_name, executable, display_name });
+    );
+    try buf.appendSlice(allocator, "Name=");
+    try buf.appendSlice(allocator, display_name);
+    try buf.appendSlice(allocator, "\nExec=");
+    try buf.appendSlice(allocator, executable);
+    try buf.appendSlice(allocator, "\nIcon=app-icon\nCategories=Utility;\nComment=");
+    try buf.appendSlice(allocator, display_name);
+    try buf.appendSlice(allocator, " desktop application\n");
+
+    if (metadata.deep_link_schemes.len > 0) {
+        try buf.appendSlice(allocator, "MimeType=");
+        for (metadata.deep_link_schemes, 0..) |scheme, i| {
+            if (i > 0) try buf.append(allocator, ';');
+            try buf.appendSlice(allocator, "x-scheme-handler/");
+            try buf.appendSlice(allocator, scheme);
+        }
+        try buf.append(allocator, ';');
+        try buf.append(allocator, '\n');
+    }
+
+    try buf.append(allocator, '\n');
+    return buf.toOwnedSlice(allocator);
 }
 
 fn runArchiveCommand(io: std.Io, argv: []const []const u8, cwd: ?[]const u8) !void {

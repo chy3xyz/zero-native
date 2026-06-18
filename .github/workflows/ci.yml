@@ -14,10 +14,11 @@ permissions:
 # CI for the zero-native framework.
 #
 # This workflow runs `zig build`, `zig build test`, and the docs build on every
-# push and pull request to `main`. The matrix currently only targets
-# ubuntu-latest; `macos-latest` will be added once the CEF runtime download is
-# hosted in CI (the runner image does not ship the framework, and `zig build
-# test` skips CEF-only checks when `-Dweb-engine=chromium` is omitted).
+# push and pull request to `main`. The build matrix covers the desktop platforms
+# we ship for (Linux, macOS, and Windows). Full tests run on Ubuntu; macOS and
+# Windows runners at least compile the framework to catch cross-platform
+# regressions. The Chromium/CEF runtime is not bundled here; CEF-specific
+# validation is handled by the separate CEF Runtime workflow.
 
 jobs:
   test:
@@ -26,8 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # TODO: add `macos-latest` once CEF runtime download is hosted in CI.
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,21 +38,20 @@ jobs:
           version: 0.17.0-dev.813+2153f8143
           cache: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.23.0
+      - name: Install native dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
 
       - name: zig build
         run: zig build
 
-      - name: zig build test
+      - name: zig build test (default)
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: zig build test
+
+      - name: zig build test (with SQLite)
+        if: runner.os == 'Linux'
+        run: zig build test -Dsqlite=true
 
   audit:
     name: Audit app.zon

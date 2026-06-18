@@ -1,8 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const geometry = @import("geometry");
 const platform_mod = @import("../root.zig");
 const policy_values = @import("../policy_values.zig");
-const security = @import("../../security/root.zig");
+const security = @import("security");
+const linux_notification = @import("notification.zig");
 
 pub const Error = error{
     CallbackFailed,
@@ -63,6 +65,13 @@ extern fn zero_native_gtk_set_webview_layer(host: *GtkHost, window_id: u64, labe
 extern fn zero_native_gtk_close_webview(host: *GtkHost, window_id: u64, label: [*]const u8, label_len: usize) c_int;
 extern fn zero_native_gtk_clipboard_read(host: *GtkHost, buffer: [*]u8, buffer_len: usize) usize;
 extern fn zero_native_gtk_clipboard_write(host: *GtkHost, text: [*]const u8, text_len: usize) void;
+
+extern fn zero_native_gtk_set_tray_callback(host: *GtkHost, callback: GtkTrayCallback, context: ?*anyopaque) void;
+extern fn zero_native_gtk_create_tray(host: *GtkHost, icon_path: [*]const u8, icon_path_len: usize, tooltip: [*]const u8, tooltip_len: usize) void;
+extern fn zero_native_gtk_update_tray_menu(host: *GtkHost, item_ids: [*]const u32, labels: [*]const [*]const u8, label_lens: [*]const usize, separators: [*]const c_int, enabled_flags: [*]const c_int, count: usize) void;
+extern fn zero_native_gtk_remove_tray(host: *GtkHost) void;
+
+const GtkTrayCallback = *const fn (context: ?*anyopaque, item_id: u32) callconv(.c) void;
 
 const GtkOpenDialogOpts = extern struct {
     title: [*]const u8,
@@ -174,6 +183,7 @@ pub const LinuxPlatform = struct {
                 .show_open_dialog_fn = showOpenDialog,
                 .show_save_dialog_fn = showSaveDialog,
                 .show_message_dialog_fn = showMessageDialog,
+                .show_notification_fn = showNotification,
                 .create_tray_fn = createTray,
                 .update_tray_menu_fn = updateTrayMenu,
                 .remove_tray_fn = removeTray,
@@ -192,6 +202,7 @@ pub const LinuxPlatform = struct {
             .handler_context = handler_context,
         };
         zero_native_gtk_set_bridge_callback(self.host, gtkBridgeCallback, &self.state);
+        zero_native_gtk_set_tray_callback(self.host, gtkTrayCallback, &self.state);
         zero_native_gtk_run(self.host, gtkCallback, &self.state);
         if (self.state.failed) return error.CallbackFailed;
     }
@@ -265,6 +276,11 @@ fn gtkBridgeCallback(context: ?*anyopaque, window_id: u64, webview_label: [*]con
         .window_id = window_id,
         .webview_label = webview_label[0..webview_label_len],
     } });
+}
+
+fn gtkTrayCallback(context: ?*anyopaque, item_id: u32) callconv(.c) void {
+    const state: *RunState = @ptrCast(@alignCast(context.?));
+    state.emit(.{ .tray_action = item_id });
 }
 
 fn readClipboard(context: ?*anyopaque, buffer: []u8) anyerror![]const u8 {
@@ -457,27 +473,60 @@ fn showMessageDialog(context: ?*anyopaque, options: platform_mod.MessageDialogOp
     return @enumFromInt(zero_native_gtk_show_message_dialog(self.host, &opts));
 }
 
-// Tray implementation — stub for now. The real implementation will use
-// libayatana-appindicator (or the StatusNotifierItem D-Bus protocol) to
-// register a system tray icon. The stub succeeds on all calls so the
-// framework's tray API surface is exercisable end-to-end; callers will
-// see a no-op tray on Linux until the native bridge lands.
-fn createTray(context: ?*anyopaque, options: platform_mod.TrayOptions) anyerror!void {
+fn showNotification(context: ?*anyopaque, options: platform_mod.NotificationOptions) anyerror!void {
     _ = context;
-    _ = options;
-    // TODO: implement via libayatana-appindicator or StatusNotifierItem.
+    // The context is unused because Linux notifications are global and do not
+    // require the GTK host. A threaded Io is created on demand because the
+    // platform service interface does not pass one through.
+    var io_thread = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer io_thread.deinit();
+    return linux_notification.show(std.heap.page_allocator, io_thread.io(), .{
+        .title = options.title,
+        .body = options.body,
+        .icon = options.icon,
+    });
+}
+
+// Tray implementation — best-effort runtime-detected wrapper around
+// libayatana-appindicator3 / libappindicator3. The C host attempts to dlopen
+// the indicator library; if it is absent or incompatible (e.g. a GTK4 host
+// with a GTK3 indicator), all calls silently no-op so the framework's tray
+// API surface remains exercisable end-to-end.
+fn createTray(context: ?*anyopaque, options: platform_mod.TrayOptions) anyerror!void {
+    if (builtin.os.tag != .linux) return;
+    const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
+    zero_native_gtk_create_tray(self.host, options.icon_path.ptr, options.icon_path.len, options.tooltip.ptr, options.tooltip.len);
+    if (options.items.len > 0) {
+        try updateTrayMenu(context, options.items);
+    }
 }
 
 fn updateTrayMenu(context: ?*anyopaque, items: []const platform_mod.TrayMenuItem) anyerror!void {
-    _ = context;
-    _ = items;
-    // TODO: implement.
+    if (builtin.os.tag != .linux) return;
+    const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
+    const count = @min(items.len, max_tray_items);
+    var ids: [max_tray_items]u32 = undefined;
+    var labels: [max_tray_items][*]const u8 = undefined;
+    var label_lens: [max_tray_items]usize = undefined;
+    var separators: [max_tray_items]c_int = undefined;
+    var enabled_flags: [max_tray_items]c_int = undefined;
+    for (items[0..count], 0..) |item, i| {
+        ids[i] = item.id;
+        labels[i] = item.label.ptr;
+        label_lens[i] = item.label.len;
+        separators[i] = if (item.separator) 1 else 0;
+        enabled_flags[i] = if (item.enabled) 1 else 0;
+    }
+    zero_native_gtk_update_tray_menu(self.host, &ids, &labels, &label_lens, &separators, &enabled_flags, count);
 }
 
 fn removeTray(context: ?*anyopaque) anyerror!void {
-    _ = context;
-    // TODO: implement.
+    if (builtin.os.tag != .linux) return;
+    const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
+    zero_native_gtk_remove_tray(self.host);
 }
+
+const max_tray_items: usize = 32;
 
 test "linux tray stub createTray succeeds" {
     const options = platform_mod.TrayOptions{
@@ -485,9 +534,8 @@ test "linux tray stub createTray succeeds" {
         .tooltip = "test tooltip",
         .items = &.{},
     };
-    // The stub succeeds on all calls so the framework's tray API surface
-    // is exercisable end-to-end. The real libayatana-appindicator
-    // implementation will replace this body.
+    // On a non-Linux target the call is a guarded no-op; on Linux the C host
+    // may load an indicator library or silently do nothing if it is absent.
     try createTray(null, options);
 }
 
@@ -495,6 +543,16 @@ test "linux tray stub updateTrayMenu and removeTray succeed" {
     const items = [_]platform_mod.TrayMenuItem{};
     try updateTrayMenu(null, &items);
     try removeTray(null);
+}
+
+test "linux notification showNotification tolerates missing backend" {
+    // When context is null the function should not crash. On non-Linux targets
+    // it returns immediately; on Linux without a notification daemon it fails
+    // gracefully and the caller falls back to in-memory logging.
+    showNotification(null, .{ .title = "test", .body = "body" }) catch |err| switch (err) {
+        error.NotificationFailed => {},
+        error.OutOfMemory => return err,
+    };
 }
 
 fn flattenFilters(filters: []const platform_mod.FileFilter, buffer: []u8) []const u8 {

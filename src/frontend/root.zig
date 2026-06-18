@@ -1,5 +1,5 @@
 const std = @import("std");
-const platform = @import("../platform/root.zig");
+const platform = @import("platform");
 
 pub const Config = struct {
     dist: []const u8 = "dist",

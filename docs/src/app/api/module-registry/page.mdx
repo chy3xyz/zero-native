@@ -56,6 +56,17 @@ pub const ModuleRegistry = struct {
 
 `validate` rejects duplicate ids and dangling `dependencies` references. `startAll` calls `start_fn` in registration order; `stopAll` runs the reverse order. `dispatchCommand` either targets a single module or broadcasts. `hasCapability` asks "does any module provide this?". `findById` returns the module with a given numeric id.
 
+## Plugin
+
+```zig
+pub const Plugin = struct {
+    name: []const u8,
+    create_fn: *const fn (allocator: std.mem.Allocator) anyerror!Module,
+};
+```
+
+`registry.loadFromManifestWithOptions` accepts a `custom_plugins` slice of `Plugin` values. Names in `metadata.plugins` that do not match a built-in plugin are resolved against this table, so third-party packages can be loaded by name alongside bundled plugins.
+
 ## CapabilityKind and RuntimeContext
 
 ```zig

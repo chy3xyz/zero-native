@@ -25,6 +25,13 @@ pub const Capability = struct {
 
 pub const RuntimeContext = struct {
     platform_name: []const u8,
+    /// Optional opaque pointer to the active `platform.PlatformServices`. The
+    /// pointer is typed as `?*const anyopaque` here to keep the extensions
+    /// module decoupled from `platform`; consumers that need it (e.g. the
+    /// notification plugin) import `platform` directly and cast. Plugins must
+    /// always tolerate a null value and fall back to in-memory or no-op
+    /// behavior.
+    services: ?*const anyopaque = null,
 };
 
 pub const Command = struct {
@@ -57,6 +64,20 @@ pub const Module = struct {
     context: *anyopaque,
     hooks: ModuleHooks = .{},
 };
+
+/// A third-party plugin factory. Apps register out-of-tree plugins by
+/// providing a name and a `create` function that returns a `Module`.
+/// The loader resolves unknown plugin names against this table after
+/// checking the built-in plugins.
+pub const Plugin = struct {
+    name: []const u8,
+    create_fn: *const fn (allocator: std.mem.Allocator) anyerror!Module,
+};
+
+/// Convenience helper for defining a third-party plugin entry.
+pub fn definePlugin(name: []const u8, comptime create_fn: anytype) Plugin {
+    return .{ .name = name, .create_fn = create_fn };
+}
 
 pub const ModuleRegistry = struct {
     modules: []const Module = &.{},

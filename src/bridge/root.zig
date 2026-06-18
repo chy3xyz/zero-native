@@ -1,6 +1,6 @@
 const std = @import("std");
 const json = @import("json");
-const security = @import("../security/root.zig");
+const security = @import("security");
 
 /// Maximum size, in bytes, of an incoming bridge request message.
 pub const max_message_bytes: usize = 1024 * 1024;

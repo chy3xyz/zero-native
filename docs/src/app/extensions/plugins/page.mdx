@@ -1,6 +1,6 @@
 # Bundled Plugins
 
-zero-native ships with 11 reference plugins demonstrating common patterns. Each plugin lives in `src/extensions/plugin_<name>.zig` and registers through the same `ModuleRegistry` hook system described in the [Extensions](/extensions) page.
+zero-native ships with 16 reference plugins demonstrating common patterns. Each plugin lives in `src/extensions/plugin_<name>.zig` and registers through the same `ModuleRegistry` hook system described in the [Extensions](/extensions) page.
 
 ## Plugin matrix
 
@@ -17,6 +17,11 @@ zero-native ships with 11 reference plugins demonstrating common patterns. Each 
 | updater | 108 | `custom/updater` | [Plugin: Updater](/extensions/plugins/updater) | Manifest parser and version comparison |
 | global-shortcut | 109 | `custom/global-shortcut` | [Plugin: Global Shortcut](/extensions/plugins/global-shortcut) | Keyboard combo registration |
 | websocket | 110 | `network` | [Plugin: WebSocket](/extensions/plugins/websocket) | RFC 6455 frame encode/decode |
+| process | 112 | `custom/process` | [Plugin: Process](/extensions/plugins/process) | Process exit and relaunch requests |
+| os | 113 | `custom/os` | [Plugin: OS](/extensions/plugins/os) | Host operating-system metadata |
+| log | 114 | `custom/log` | [Plugin: Log](/extensions/plugins/log) | Frontend log buffering |
+| cli | 115 | `custom/cli` | [Plugin: CLI](/extensions/plugins/cli) | argv and subcommand matching |
+| sql | 116 | `custom/sql` | [Plugin: SQL](/extensions/plugins/sql) | Embedded SQLite database (requires `-Dsqlite`) |
 
 ## Conventions
 

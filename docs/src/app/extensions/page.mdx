@@ -256,6 +256,34 @@ console.log(value);
 
 See [Plugin: Clipboard](/extensions/plugins/clipboard) for the full lifecycle and [Bundled Plugins](/extensions/plugins) for the full list of available plugins.
 
+## Third-party plugins
+
+Out-of-tree plugins use the same `Module` shape as bundled plugins. Register them by providing a `Plugin` table to `Runtime.loadPlugins` or `registry.loadFromManifestWithOptions`:
+
+```zig
+const zero_native = @import("zero-native");
+
+const my_plugin = @import("my-plugin");
+
+const custom_plugins = &[_]zero_native.extensions.Plugin{.{
+    .name = "my-plugin",
+    .create_fn = my_plugin.create,
+}};
+
+try runtime.loadPlugins(allocator, io, metadata.plugins, .{
+    .custom_plugins = custom_plugins,
+    .config = .{
+        .app_name = metadata.id,
+        .current_version = metadata.version,
+        .manifest_url = metadata.updates.feed_url,
+        .public_key_b64 = metadata.updates.public_key,
+        .check_on_start = metadata.updates.check_on_start,
+    },
+});
+```
+
+The loader checks built-in plugin names first, then falls back to the custom table. If a name is not found in either, `error.UnknownPlugin` is returned. Once loaded, third-party plugins participate in command dispatch and lifecycle hooks exactly like bundled plugins.
+
 ## Native JS engine (experimental)
 
 The `js` module provides an abstraction layer for calling into a native JavaScript engine from Zig. This is separate from the WebView bridge and is intended for future native module integrations.

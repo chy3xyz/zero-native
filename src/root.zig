@@ -15,7 +15,7 @@ pub const diagnostics = @import("diagnostics");
 pub const platform_info = @import("platform_info");
 
 pub const runtime = @import("runtime/root.zig");
-pub const platform = @import("platform/root.zig");
+pub const platform = @import("platform");
 pub const window_state = @import("window_state/root.zig");
 pub const asset_server = @import("assets/root.zig");
 pub const debug = @import("debug/root.zig");
@@ -25,7 +25,7 @@ pub const extensions = @import("extensions/root.zig");
 pub const js = @import("js/root.zig");
 pub const bridge = @import("bridge/root.zig");
 pub const frontend = @import("frontend/root.zig");
-pub const security = @import("security/root.zig");
+pub const security = @import("security");
 
 pub const Runtime = runtime.Runtime;
 pub const RuntimeOptions = runtime.Options;

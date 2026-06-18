@@ -1,7 +1,7 @@
 const std = @import("std");
 const app_dirs = @import("app_dirs");
 const geometry = @import("geometry");
-const platform = @import("../platform/root.zig");
+const platform = @import("platform");
 
 pub const Error = error{
     NoSpaceLeft,

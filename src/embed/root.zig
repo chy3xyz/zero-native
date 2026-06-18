@@ -1,6 +1,6 @@
 const std = @import("std");
 const runtime = @import("../runtime/root.zig");
-const platform = @import("../platform/root.zig");
+const platform = @import("platform");
 
 pub const EmbeddedApp = struct {
     app: runtime.App,

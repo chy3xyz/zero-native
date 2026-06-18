@@ -27,6 +27,8 @@
 const std = @import("std");
 const crypto = std.crypto;
 const extensions = @import("root.zig");
+const Io = std.Io;
+const httpz = @import("httpz");
 
 /// Unique module id for the WebSocket plugin.
 pub const ModuleId: extensions.ModuleId = 110;
@@ -194,6 +196,18 @@ pub fn encodeClientHandshake(
     return buf.toOwnedSlice(allocator);
 }
 
+/// Computes the RFC 6455 `Sec-WebSocket-Accept` value for a given client key.
+/// Returns a base64-encoded SHA-1 hash of `key + websocket_guid`. Caller
+/// owns the returned slice.
+pub fn computeAccept(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
+    var sha1_buf: [crypto.hash.Sha1.digest_length]u8 = undefined;
+    var sha1 = crypto.hash.Sha1.init(.{});
+    sha1.update(key);
+    sha1.update(websocket_guid);
+    sha1.final(&sha1_buf);
+    return base64Encode(allocator, &sha1_buf);
+}
+
 /// Verifies that `response_bytes` is a valid WebSocket upgrade response (101).
 /// Checks for HTTP 101 status, `Upgrade: websocket`, and the correct
 /// `Sec-WebSocket-Accept` hash derived from `key + websocket_guid`.
@@ -209,15 +223,7 @@ pub fn decodeHandshakeResponse(allocator: std.mem.Allocator, response_bytes: []c
     if (std.mem.indexOf(u8, response_bytes, "Upgrade: websocket") == null and
         std.mem.indexOf(u8, response_bytes, "upgrade: websocket") == null) return false;
 
-    // Verify Sec-WebSocket-Accept.
-    // Compute expected: base64(sha1(key + guid)).
-    var sha1_buf: [crypto.hash.Sha1.digest_length]u8 = undefined;
-    var sha1 = crypto.hash.Sha1.init(.{});
-    sha1.update(key);
-    sha1.update(websocket_guid);
-    sha1.final(&sha1_buf);
-
-    const expected_accept = try base64Encode(allocator, &sha1_buf);
+    const expected_accept = try computeAccept(allocator, key);
     defer allocator.free(expected_accept);
 
     // Look for the accept header in the response.
@@ -258,8 +264,28 @@ pub fn encodeFrame(
 ) ![]u8 {
     // Mask key is fixed to make tests deterministic.
     const mask_key = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
+    return encodeFrameRaw(allocator, payload, opcode, true, mask_key);
+}
 
-    var header_len: usize = 2 + 4; // min header + mask key
+/// Encodes an unmasked WebSocket frame (server-to-client style).
+///
+/// Sets FIN=1 and MASK=0. Caller owns the returned frame bytes.
+pub fn encodeFrameUnmasked(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    opcode: u4,
+) ![]u8 {
+    return encodeFrameRaw(allocator, payload, opcode, false, .{ 0, 0, 0, 0 });
+}
+
+fn encodeFrameRaw(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    opcode: u4,
+    masked: bool,
+    mask_key: [4]u8,
+) ![]u8 {
+    var header_len: usize = 2 + if (masked) @as(usize, 4) else 0;
     if (payload.len > 125) header_len += 2;
     if (payload.len > 65535) header_len += 6; // 8-byte extended length (2 already counted)
 
@@ -270,27 +296,32 @@ pub fn encodeFrame(
     // Byte 0: FIN(1) = 0x80 | opcode(lower 4 bits)
     buf[0] = @as(u8, 0x80) | @as(u8, opcode);
 
-    // Byte 1: MASK(1) = 0x80 | payload_len
+    // Byte 1: MASK bit | payload_len
     var pos: usize = 2;
+    const mask_bit: u8 = if (masked) 0x80 else 0;
     if (payload.len < 126) {
-        buf[1] = 0x80 | @as(u8, @intCast(payload.len));
+        buf[1] = mask_bit | @as(u8, @intCast(payload.len));
     } else if (payload.len <= 65535) {
-        buf[1] = 0x80 | 126;
+        buf[1] = mask_bit | 126;
         std.mem.writeInt(u16, buf[pos..][0..2], @as(u16, @intCast(payload.len)), .big);
         pos += 2;
     } else {
-        buf[1] = 0x80 | 127;
+        buf[1] = mask_bit | 127;
         std.mem.writeInt(u64, buf[pos..][0..8], @as(u64, @intCast(payload.len)), .big);
         pos += 8;
     }
 
-    // Mask key (4 bytes).
-    @memcpy(buf[pos..][0..4], &mask_key);
-    pos += 4;
+    if (masked) {
+        // Mask key (4 bytes).
+        @memcpy(buf[pos..][0..4], &mask_key);
+        pos += 4;
 
-    // Payload (masked).
-    for (payload, 0..) |byte, i| {
-        buf[pos + i] = byte ^ mask_key[i % 4];
+        // Payload (masked).
+        for (payload, 0..) |byte, i| {
+            buf[pos + i] = byte ^ mask_key[i % 4];
+        }
+    } else {
+        @memcpy(buf[pos..][0..payload.len], payload);
     }
 
     return buf;
@@ -354,10 +385,15 @@ pub fn unmaskPayload(allocator: std.mem.Allocator, payload: []const u8, mask_key
 /// Mutable state owned by a WebSocket module instance.
 ///
 /// All owned slices (`last_host`, `last_path`, `last_sent_frame`) are freed
-/// in `stop`. Real TCP I/O is deferred — `handleConnect` currently only
-/// records the parsed URL parts in the `last_*` fields.
+/// in `stop`. When the plugin is created with `createWithIo`, `connected`
+/// means a real TCP stream has been opened and the RFC 6455 handshake has
+/// completed. When created via the io-less `create`, `connected` only
+/// reflects that a valid URL has been recorded (record-only mode).
 pub const WsState = struct {
-    /// True after a successful `websocket.connect` with a valid URL.
+    /// True after a successful `websocket.connect`.
+    ///
+    /// For `createWithIo` + `ws://` this requires a completed handshake.
+    /// For `create` (no I/O) or `wss://` this means a valid URL was recorded.
     connected: bool = false,
     /// Most recently encoded outbound frame. Freed in `stop`.
     last_sent_frame: ?[]u8 = null,
@@ -369,34 +405,48 @@ pub const WsState = struct {
     last_port: u16 = 0,
     /// True for `wss://`, false for `ws://`.
     last_secure: bool = false,
+    /// I/O handle used for real TCP connections. `null` for record-only mode.
+    io: ?Io = null,
+    /// Open TCP stream for ws://. Owned; closed in `stop`.
+    stream: ?Io.net.Stream = null,
+    /// TLS connection for wss:// (shares the fd with `stream`). Must be
+    /// deinited BEFORE the stream is closed.
+    tls_conn: ?httpz.tls.Connection = null,
+    /// Reusable buffer for formatting the Host header.
+    last_host_header: [256]u8 = undefined,
     allocator: std.mem.Allocator,
 };
+
+/// Error set for real WebSocket connection attempts.
+pub const ConnectError = error{
+    HandshakeFailed,
+    InvalidResponse,
+    ConnectionFailed,
+} || std.mem.Allocator.Error;
 
 // ── Lifecycle hooks ─────────────────────────────────────────────────────────
 
 /// No-op startup hook.
 pub fn start(_: *anyopaque, _: extensions.RuntimeContext) anyerror!void {}
 
-/// Frees the last-sent frame buffer, parsed URL parts, and destroys the
-/// state itself.
+/// Frees the last-sent frame buffer, parsed URL parts, closes any open
+/// stream, and destroys the state itself.
 pub fn stop(context: *anyopaque, _: extensions.RuntimeContext) anyerror!void {
     const state: *WsState = @ptrCast(@alignCast(context));
-    if (state.last_sent_frame) |frame| state.allocator.free(frame);
-    if (state.last_host) |host| state.allocator.free(host);
-    if (state.last_path) |path| state.allocator.free(path);
+    resetConnectionState(state);
     state.allocator.destroy(state);
 }
 
 // ── Command dispatch ────────────────────────────────────────────────────────
 
 /// Routes commands by `cmd.name`:
-/// - `websocket.connect` — parses `cmd.payload` as a `ws://` or `wss://` URL,
-///   stores the parsed host/port/path/secure in `last_*`, and sets
-///   `connected = true`. Real TCP + handshake is deferred — see the TODO
-///   in `handleConnect`.
-/// - `websocket.send`    — encodes `cmd.payload` as a text frame and records
-///   it in `last_sent_frame`.
-/// - `websocket.close`   — sets `connected = false`.
+/// - `websocket.connect` — parses `cmd.payload` as a `ws://` or `wss://` URL
+///   and records the parsed parts. With `createWithIo` and a `ws://` URL it
+///   also opens a real TCP stream and performs the RFC 6455 handshake.
+/// - `websocket.send`    — encodes `cmd.payload` as a masked text frame and,
+///   if a real stream is open, writes the frame to it.
+/// - `websocket.close`   — sends a close frame on any open stream, closes the
+///   stream, and resets connection state.
 pub fn command(
     context: *anyopaque,
     _: extensions.RuntimeContext,
@@ -416,12 +466,10 @@ pub fn command(
 /// Parse `payload` as a `ws://` or `wss://` URL and record the parsed
 /// components in `state.last_host`, `state.last_port`, `state.last_path`,
 /// and `state.last_secure`. On a successful parse `state.connected` is set
-/// to `true`. On a parse failure `state.connected` is forced to `false`
-/// and the function returns without raising an error.
-///
-/// TODO: real TCP + handshake via `std.Io.NetStream` — currently the parsed
-/// URL is only recorded; no socket is opened and no RFC 6455 handshake is
-/// performed.
+/// to `true` (record-only mode) and, if `state.io` is present and the URL
+/// is `ws://`, a real TCP connection plus RFC 6455 handshake is performed.
+/// On a parse failure `state.connected` is forced to `false` and the
+/// function returns without raising an error.
 fn handleConnect(state: *WsState, payload: []const u8) void {
     const parsed = parseWsUrl(payload) orelse {
         resetConnectionState(state);
@@ -447,25 +495,169 @@ fn handleConnect(state: *WsState, payload: []const u8) void {
     state.last_path = new_path;
     state.last_port = parsed.port;
     state.last_secure = parsed.secure;
+
+    // io-less creation falls back to record-only mode.
+    if (state.io == null) {
+        state.connected = true;
+        return;
+    }
+
+    const io = state.io.?;
+    doConnectAndHandshake(state, io, parsed) catch {
+        state.connected = false;
+        return;
+    };
+
     state.connected = true;
 }
 
+/// Open a TCP connection to `parsed` and perform the RFC 6455 handshake.
+/// On success, sets `state.stream` (ws://) or `state.tls_fd`+`state.tls_conn` (wss://).
+fn doConnectAndHandshake(state: *WsState, io: Io, parsed: WsUrl) ConnectError!void {
+    const hostname = Io.net.HostName.init(parsed.host) catch return error.ConnectionFailed;
+    var stream = hostname.connect(io, parsed.port, .{ .mode = .stream }) catch return error.ConnectionFailed;
+    errdefer stream.close(io);
+
+    const fd = stream.socket.handle;
+
+    // Generate a random 16-byte nonce.
+    var key: [16]u8 = undefined;
+    io.random(&key);
+
+    const host_header = if (parsed.port == 80 or parsed.port == 443)
+        parsed.host
+    else
+        hostHeaderBuf(&state.last_host_header, parsed.host, parsed.port);
+
+    const request = encodeClientHandshake(state.allocator, host_header, parsed.path, &key) catch |err| return err;
+    defer state.allocator.free(request);
+
+    if (parsed.secure) {
+        // Wrap the raw fd in TLS via httpz/OpenSSL.
+        var tls_conn = httpz.tls.client(fd, .{ .host = parsed.host }) catch {
+            return error.ConnectionFailed;
+        };
+        errdefer tls_conn.deinit();
+
+        // Send handshake request through TLS.
+        tls_conn.writeAll(request) catch {
+            tls_conn.deinit();
+            return error.ConnectionFailed;
+        };
+
+        // Read response through TLS.
+        var resp_buf: [4096]u8 = undefined;
+        const resp_len = tls_conn.read(&resp_buf) catch {
+            tls_conn.deinit();
+            return error.ConnectionFailed;
+        };
+        const resp_bytes = resp_buf[0..resp_len];
+
+        const handshake_ok = decodeHandshakeResponse(state.allocator, resp_bytes, &key) catch |err| {
+            tls_conn.deinit();
+            return err;
+        };
+        if (!handshake_ok) {
+            tls_conn.deinit();
+            return error.HandshakeFailed;
+        }
+
+        state.stream = stream;
+        state.tls_conn = tls_conn;
+        return;
+    }
+
+    // Plain ws:// — use TCP stream directly.
+    var write_buf: [4096]u8 = undefined;
+    var writer = Io.net.Stream.Writer.init(stream, io, &write_buf);
+    writer.interface.writeAll(request) catch return error.ConnectionFailed;
+    writer.interface.flush() catch return error.ConnectionFailed;
+
+    var read_buf: [4096]u8 = undefined;
+    var reader = Io.net.Stream.Reader.init(stream, io, &read_buf);
+    const response = reader.interface.allocRemaining(state.allocator, .limited(4096)) catch |err| switch (err) {
+        error.ReadFailed => return error.InvalidResponse,
+        error.OutOfMemory => |e| return e,
+        error.StreamTooLong => return error.InvalidResponse,
+    };
+    defer state.allocator.free(response);
+
+    const handshake_ok = decodeHandshakeResponse(state.allocator, response, &key) catch |err| return err;
+    if (!handshake_ok) {
+        return error.HandshakeFailed;
+    }
+
+    state.stream = stream;
+}
+
 /// Encode `payload` as a text frame and record it in `state.last_sent_frame`.
+/// If a real stream is open, also write the masked frame to it.
 fn handleSend(state: *WsState, payload: []const u8) void {
     if (state.last_sent_frame) |old| state.allocator.free(old);
     state.last_sent_frame = null;
 
     const frame = encodeFrame(state.allocator, payload, @intFromEnum(OpCode.text)) catch return;
     state.last_sent_frame = frame;
+
+    // Write through TLS if active.
+    if (state.tls_conn) |*tls| {
+        tls.writeAll(frame) catch {};
+        return;
+    }
+
+    // Write through plain TCP stream.
+    const stream = state.stream orelse return;
+    const io = state.io orelse return;
+
+    var write_buf: [4096]u8 = undefined;
+    var writer = Io.net.Stream.Writer.init(stream, io, &write_buf);
+    writer.interface.writeAll(frame) catch {};
+    writer.interface.flush() catch {};
 }
 
-/// Reset `connected` to `false`. Real socket teardown is deferred.
+/// Send a close frame on any open stream, close the stream, and reset
+/// connection state.
 fn handleClose(state: *WsState) void {
-    state.connected = false;
+    // Send close frame through TLS if active.
+    if (state.tls_conn) |*tls| {
+        if (encodeFrame(state.allocator, "", @intFromEnum(OpCode.close))) |close_frame| {
+            defer state.allocator.free(close_frame);
+            tls.writeAll(close_frame) catch {};
+        } else |_| {}
+        tls.close() catch {};
+        tls.deinit();
+        state.tls_conn = null;
+        if (state.stream) |s| {
+            if (state.io) |io| s.close(io);
+            state.stream = null;
+        }
+        resetConnectionState(state);
+        return;
+    }
+
+    // Plain TCP stream.
+    if (state.stream) |stream| {
+        if (state.io) |io| {
+            if (encodeFrame(state.allocator, "", @intFromEnum(OpCode.close))) |close_frame| {
+                defer state.allocator.free(close_frame);
+                var write_buf: [128]u8 = undefined;
+                var writer = Io.net.Stream.Writer.init(stream, io, &write_buf);
+                writer.interface.writeAll(close_frame) catch {};
+                writer.interface.flush() catch {};
+            } else |_| {}
+            stream.close(io);
+        }
+    }
+    resetConnectionState(state);
 }
 
-/// Drop any prior connection state — free owned slices, clear flags. Used
-/// by `handleConnect` before recording a new URL or after a parse failure.
+fn hostHeaderBuf(buf: *[256]u8, host: []const u8, port: u16) []const u8 {
+    return std.fmt.bufPrint(buf, "{s}:{d}", .{ host, port }) catch host;
+}
+
+/// Drop any prior connection state — free owned slices, close any open
+/// stream, clear flags. Used by `handleConnect` before recording a new URL,
+/// after a parse failure, and in `stop`/`handleClose`.
 fn resetConnectionState(state: *WsState) void {
     if (state.last_sent_frame) |old| {
         state.allocator.free(old);
@@ -479,6 +671,15 @@ fn resetConnectionState(state: *WsState) void {
         state.allocator.free(old);
         state.last_path = null;
     }
+    if (state.tls_conn) |*tls| {
+        tls.close() catch {};
+        tls.deinit();
+        state.tls_conn = null;
+    }
+    if (state.stream) |stream| {
+        if (state.io) |io| stream.close(io);
+        state.stream = null;
+    }
     state.connected = false;
     state.last_port = 0;
     state.last_secure = false;
@@ -486,12 +687,22 @@ fn resetConnectionState(state: *WsState) void {
 
 // ── Factory ─────────────────────────────────────────────────────────────────
 
-/// Allocates a new `WsState` and wraps it in a `Module`.
+/// Allocates a new `WsState` in record-only mode (no I/O handle) and wraps
+/// it in a `Module`. Use `createWithIo` to obtain a plugin that opens real
+/// TCP connections.
 pub fn create(allocator: std.mem.Allocator) !extensions.Module {
+    return createWithIo(allocator, null);
+}
+
+/// Allocates a new `WsState` with an optional I/O handle and wraps it in a
+/// `Module`. When `io` is non-null, `websocket.connect` opens real TCP
+/// streams for `ws://` URLs.
+pub fn createWithIo(allocator: std.mem.Allocator, io: ?Io) !extensions.Module {
     const state = try allocator.create(WsState);
     errdefer allocator.destroy(state);
     state.* = .{
         .allocator = allocator,
+        .io = io,
     };
 
     const caps = [_]extensions.Capability{.{ .kind = .network, .name = "websocket" }};
@@ -930,4 +1141,105 @@ test "websocket: registry integration" {
     module.context = undefined;
 
     try std.testing.expect(registry.hasCapability(.network));
+}
+
+
+test "computeAccept produces expected Sec-WebSocket-Accept" {
+    const allocator = std.testing.allocator;
+
+    // Example from RFC 6455 §4.2.2.
+    const key = "dGhlIHNhbXBsZSBub25jZQ==";
+    const accept = try computeAccept(allocator, key);
+    defer allocator.free(accept);
+
+    try std.testing.expectEqualStrings("SELL4T65YPA0TYtSZN+iA8DJc3A=", accept);
+}
+
+test "encodeFrameUnmasked produces server-to-client frame" {
+    const allocator = std.testing.allocator;
+
+    const frame = try encodeFrameUnmasked(allocator, "Hi", @intFromEnum(OpCode.text));
+    defer allocator.free(frame);
+
+    // FIN=1, opcode=text → 0x81; MASK=0, len=2 → 0x02.
+    try std.testing.expectEqual(@as(u8, 0x81), frame[0]);
+    try std.testing.expectEqual(@as(u8, 0x02), frame[1]);
+    try std.testing.expectEqual(@as(usize, 2 + 2), frame.len);
+    try std.testing.expectEqualStrings("Hi", frame[2..4]);
+}
+
+test "websocket: createWithIo stores io handle and create does not" {
+    const allocator = std.testing.allocator;
+
+    const io_module = try createWithIo(allocator, std.testing.io);
+    defer io_module.hooks.stop_fn.?(io_module.context, .{ .platform_name = "null" }) catch {};
+    const io_state: *WsState = @ptrCast(@alignCast(io_module.context));
+    try std.testing.expect(io_state.io != null);
+
+    const record_module = try create(allocator);
+    defer record_module.hooks.stop_fn.?(record_module.context, .{ .platform_name = "null" }) catch {};
+    const record_state: *WsState = @ptrCast(@alignCast(record_module.context));
+    try std.testing.expect(record_state.io == null);
+}
+
+test "websocket: computeAccept produces expected RFC 6455 accept value" {
+    // Golden value from RFC 6455 section 1.3: dGhlIHNhbXBsZSBub25jZQ==
+    // -> SELL4T65YPA0TYtSZN+iA8DJc3A=
+    const allocator = std.testing.allocator;
+    const accept = try computeAccept(allocator, "dGhlIHNhbXBsZSBub25jZQ==");
+    defer allocator.free(accept);
+    try std.testing.expectEqualStrings("SELL4T65YPA0TYtSZN+iA8DJc3A=", accept);
+}
+
+fn extractWsKey(request: []const u8) ?[]const u8 {
+    const prefix = "Sec-WebSocket-Key: ";
+    const key_start = std.mem.indexOf(u8, request, prefix) orelse {
+        const lower_prefix = "sec-websocket-key: ";
+        const lower_start = std.mem.indexOf(u8, request, lower_prefix) orelse return null;
+        const value_start = lower_start + lower_prefix.len;
+        const value_end = std.mem.indexOfScalarPos(u8, request, value_start, '\r') orelse request.len;
+        return request[value_start..value_end];
+    };
+    const value_start = key_start + prefix.len;
+    const value_end = std.mem.indexOfScalarPos(u8, request, value_start, '\r') orelse request.len;
+    return request[value_start..value_end];
+}
+
+fn readFrameBytes(allocator: std.mem.Allocator, reader: *Io.Reader) ![]u8 {
+    const header = try reader.peek(2);
+    const payload_len_small = header[1] & 0x7F;
+    var header_len: usize = 2;
+    var payload_len: usize = 0;
+    if (payload_len_small == 126) {
+        const ext = try reader.peek(4);
+        payload_len = std.mem.readInt(u16, ext[2..4], .big);
+        header_len = 4;
+    } else if (payload_len_small == 127) {
+        const ext = try reader.peek(10);
+        payload_len = @intCast(std.mem.readInt(u64, ext[2..10], .big));
+        header_len = 10;
+    } else {
+        payload_len = payload_len_small;
+    }
+
+    const masked = (header[1] & 0x80) != 0;
+    if (masked) header_len += 4;
+
+    const total = header_len + payload_len;
+    const raw_frame = try reader.take(total);
+    return allocator.dupe(u8, raw_frame);
+}
+
+fn extractMaskKey(frame_bytes: []const u8) ?[4]u8 {
+    if (frame_bytes.len < 2) return null;
+    const payload_len_small = frame_bytes[1] & 0x7F;
+    var pos: usize = 2;
+    if (payload_len_small == 126) {
+        pos = 4;
+    } else if (payload_len_small == 127) {
+        pos = 10;
+    }
+    if ((frame_bytes[1] & 0x80) == 0) return .{ 0, 0, 0, 0 };
+    if (frame_bytes.len < pos + 4) return null;
+    return frame_bytes[pos..][0..4].*;
 }

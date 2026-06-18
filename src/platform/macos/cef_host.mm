@@ -276,6 +276,7 @@ static const char *ZeroNativeCefBridgeScript() {
         "if(window.zero&&window.zero.invoke){return;}"
         "var pending=new Map();"
         "var listeners=new Map();"
+        "var streams=new Map();"
         "var nextId=1;"
         "function post(message){"
         "if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.zeroNativeBridge){window.webkit.messageHandlers.zeroNativeBridge.postMessage(message);return;}"
@@ -283,6 +284,13 @@ static const char *ZeroNativeCefBridgeScript() {
         "throw new Error('zero-native bridge transport is unavailable');"
         "}"
         "function complete(response){"
+        "if(response&&response.stream!=null){"
+        "var stream=streams.get(response.stream);"
+        "if(!stream){return;}"
+        "if(response.kind==='end'){if(typeof stream.onEnd==='function'){try{stream.onEnd();}catch(e){}}streams.delete(response.stream);return;}"
+        "try{stream.onValue(response.payload===undefined?null:response.payload);}catch(e){if(typeof stream.onError==='function'){try{stream.onError(e);}catch(_){}}}"
+        "return;"
+        "}"
         "var id=response&&response.id!=null?String(response.id):'';"
         "var entry=pending.get(id);"
         "if(!entry){return;}"
@@ -314,6 +322,7 @@ static const char *ZeroNativeCefBridgeScript() {
         "function on(name,callback){if(typeof callback!=='function'){throw new TypeError('callback must be a function');}var set=listeners.get(name);if(!set){set=new Set();listeners.set(name,set);}set.add(callback);return function(){off(name,callback);};}"
         "function off(name,callback){var set=listeners.get(name);if(set){set.delete(callback);if(set.size===0){listeners.delete(name);}}}"
         "function emit(name,detail){var set=listeners.get(name);if(set){Array.from(set).forEach(function(callback){callback(detail);});}window.dispatchEvent(new CustomEvent('zero-native:'+name,{detail:detail}));}"
+        "function openChannel(id,handler){if(typeof id!=='number'||!isFinite(id)||id<0||Math.floor(id)!==id){throw new TypeError('channel id must be a non-negative integer');}if(!handler||typeof handler.onValue!=='function'){throw new TypeError('handler.onValue must be a function');}if(streams.has(id)){throw new Error('channel already open');}streams.set(id,handler);return {close:function(){streams.delete(id);}};}"
         "var windows=Object.freeze({"
         "create:function(options){return invoke('zero-native.window.create',options||{});},"
         "list:function(){return invoke('zero-native.window.list',{});},"
@@ -336,7 +345,7 @@ static const char *ZeroNativeCefBridgeScript() {
         "setLayer:function(options){return invoke('zero-native.webview.setLayer',layerPayload(options));},"
         "close:function(options){return invoke('zero-native.webview.close',closePayload(options));}"
         "});"
-        "Object.defineProperty(window,'zero',{value:Object.freeze({invoke:invoke,on:on,off:off,windows:windows,dialogs:dialogs,webviews:webviews,_complete:complete,_emit:emit}),configurable:false});"
+        "Object.defineProperty(window,'zero',{value:Object.freeze({invoke:invoke,on:on,off:off,windows:windows,dialogs:dialogs,webviews:webviews,channels:{open:openChannel},_complete:complete,_emit:emit}),configurable:false});"
         "})();";
 }
 

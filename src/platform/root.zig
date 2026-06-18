@@ -1,7 +1,7 @@
 const std = @import("std");
 const geometry = @import("geometry");
 const platform_info = @import("platform_info");
-const security = @import("../security/root.zig");
+const security = @import("security");
 
 pub const Error = error{
     UnsupportedService,
@@ -294,6 +294,12 @@ pub const TrayMenuItem = struct {
     enabled: bool = true,
 };
 
+pub const NotificationOptions = struct {
+    title: []const u8,
+    body: []const u8 = "",
+    icon: []const u8 = "",
+};
+
 pub const Event = union(enum) {
     app_start,
     frame_requested,
@@ -341,6 +347,7 @@ pub const PlatformServices = struct {
     show_open_dialog_fn: ?*const fn (context: ?*anyopaque, options: OpenDialogOptions, buffer: []u8) anyerror!OpenDialogResult = null,
     show_save_dialog_fn: ?*const fn (context: ?*anyopaque, options: SaveDialogOptions, buffer: []u8) anyerror!?[]const u8 = null,
     show_message_dialog_fn: ?*const fn (context: ?*anyopaque, options: MessageDialogOptions) anyerror!MessageDialogResult = null,
+    show_notification_fn: ?*const fn (context: ?*anyopaque, options: NotificationOptions) anyerror!void = null,
     create_tray_fn: ?*const fn (context: ?*anyopaque, options: TrayOptions) anyerror!void = null,
     update_tray_menu_fn: ?*const fn (context: ?*anyopaque, items: []const TrayMenuItem) anyerror!void = null,
     remove_tray_fn: ?*const fn (context: ?*anyopaque) anyerror!void = null,
@@ -447,6 +454,11 @@ pub const PlatformServices = struct {
         return msg_fn(self.context, options);
     }
 
+    pub fn showNotification(self: PlatformServices, options: NotificationOptions) anyerror!void {
+        const notify_fn = self.show_notification_fn orelse return error.UnsupportedService;
+        return notify_fn(self.context, options);
+    }
+
     pub fn createTray(self: PlatformServices, options: TrayOptions) anyerror!void {
         const tray_fn = self.create_tray_fn orelse return error.UnsupportedService;
         return tray_fn(self.context, options);
@@ -548,6 +560,7 @@ pub const NullPlatform = struct {
                 .set_webview_zoom_fn = setWebViewZoom,
                 .set_webview_layer_fn = setWebViewLayer,
                 .close_webview_fn = closeWebView,
+                .show_notification_fn = showNotification,
                 .configure_security_policy_fn = configureSecurityPolicy,
                 .emit_window_event_fn = emitWindowEvent,
             },
@@ -752,6 +765,12 @@ pub const NullPlatform = struct {
     fn configureSecurityPolicy(context: ?*anyopaque, policy: security.Policy) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
         self.security_policy = policy;
+    }
+
+    fn showNotification(context: ?*anyopaque, options: NotificationOptions) anyerror!void {
+        _ = context;
+        _ = options;
+        return error.UnsupportedService;
     }
 
     fn emitWindowEvent(context: ?*anyopaque, window_id: WindowId, name: []const u8, detail_json: []const u8) anyerror!void {

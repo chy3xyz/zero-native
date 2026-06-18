@@ -1,7 +1,7 @@
 const geometry = @import("geometry");
 const platform_mod = @import("../root.zig");
 const policy_values = @import("../policy_values.zig");
-const security = @import("../../security/root.zig");
+const security = @import("security");
 
 pub const Error = error{
     CallbackFailed,
@@ -113,6 +113,7 @@ extern fn zero_native_appkit_create_tray(host: *AppKitHost, icon_path: [*]const 
 extern fn zero_native_appkit_update_tray_menu(host: *AppKitHost, item_ids: [*]const u32, labels: [*]const [*]const u8, label_lens: [*]const usize, separators: [*]const c_int, enabled_flags: [*]const c_int, count: usize) void;
 extern fn zero_native_appkit_remove_tray(host: *AppKitHost) void;
 extern fn zero_native_appkit_set_tray_callback(host: *AppKitHost, callback: AppKitTrayCallback, context: ?*anyopaque) void;
+extern fn zero_native_appkit_show_notification(host: *AppKitHost, title: [*]const u8, title_len: usize, body: [*]const u8, body_len: usize) void;
 
 pub const MacPlatform = struct {
     host: *AppKitHost,
@@ -177,6 +178,7 @@ pub const MacPlatform = struct {
                 .show_open_dialog_fn = showOpenDialog,
                 .show_save_dialog_fn = showSaveDialog,
                 .show_message_dialog_fn = showMessageDialog,
+                .show_notification_fn = showNotification,
                 .create_tray_fn = createTray,
                 .update_tray_menu_fn = updateTrayMenu,
                 .remove_tray_fn = removeTray,
@@ -487,6 +489,11 @@ fn updateTrayMenu(context: ?*anyopaque, items: []const platform_mod.TrayMenuItem
         enabled_flags[i] = if (item.enabled) 1 else 0;
     }
     zero_native_appkit_update_tray_menu(self.host, &ids, &labels, &label_lens, &separators, &enabled_flags, count);
+}
+
+fn showNotification(context: ?*anyopaque, options: platform_mod.NotificationOptions) anyerror!void {
+    const self: *MacPlatform = @ptrCast(@alignCast(context.?));
+    zero_native_appkit_show_notification(self.host, options.title.ptr, options.title.len, options.body.ptr, options.body.len);
 }
 
 fn removeTray(context: ?*anyopaque) anyerror!void {

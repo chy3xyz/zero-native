@@ -12,6 +12,8 @@ zero-native reserves an explicit update configuration in `app.zon` so packaged a
 
 The runtime does not silently install updates. Apps should surface update checks through their own UI, verify signatures before applying artifacts, and keep platform-specific installation behavior explicit.
 
+When `check_on_start` is `true` and the `updater` plugin is enabled, the runtime fetches the feed during plugin startup. Network failures on startup are ignored so the app still launches.
+
 ## Fields
 
 <table>
@@ -124,14 +126,14 @@ std.debug.print("{s}\n", .{sig_b64});
 
 1. Generate a keypair and encode the public key as base64.
 2. Add `public_key` and `feed_url` to `app.zon`.
-3. At startup, create the updater plugin with `create(allocator, io, current_version, manifest_url, public_key_b64)` and register it.
-4. Call `updater.check`. Inspect `update_available` and surface the result in your UI.
+3. Add `"updater"` to `.plugins` in `app.zon`. The runtime will configure the plugin using the `.updates` block automatically when you call `runtime.loadPlugins(..., metadata.plugins, .{ .config = ... })`.
+4. Call `updater.check` (empty payload fetches the configured feed). Inspect `update_available` and surface the result in your UI.
 5. On user confirmation, call `updater.download` then `updater.install`.
 6. On next launch, the app host detects the staged update and swaps binaries.
 
 ### Network considerations
 
-The vendored `http_client` only supports plain `http://` URLs. For `https://` URLs, the plugin will return `HttpsNotSupported` until the httpz TLS backend is wired in (see `src/extensions/http_client.zig` for integration instructions). In production, serve manifest URLs over HTTP behind a trusted network, or wait for TLS support.
+The updater plugin uses `http_client`, which supports both plain `http://` and `https://` URLs. HTTPS requests are handled by the httpz/OpenSSL backend; make sure the target system has `libssl`/`libcrypto` available when using HTTPS feeds.
 
 ### Plugin source
 

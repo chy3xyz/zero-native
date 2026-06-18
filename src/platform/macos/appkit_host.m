@@ -4,6 +4,7 @@
 #import <WebKit/WebKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <Carbon/Carbon.h>
 #include <string.h>
 
 @class ZeroNativeAppKitHost;
@@ -70,6 +71,8 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, assign) zero_native_appkit_tray_callback_t trayCallback;
 @property(nonatomic, assign) void *trayContext;
+@property(nonatomic, assign) void (*hotkeyCallback)(uint32_t);
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *hotkeyRefs;
 @property(nonatomic, strong) NSArray<NSString *> *allowedNavigationOrigins;
 @property(nonatomic, strong) NSArray<NSString *> *allowedExternalURLs;
 @property(nonatomic, assign) NSInteger externalLinkAction;
@@ -727,6 +730,7 @@ static NSString *ZeroNativeAppKitBridgeScript(void) {
         "if(window.zero&&window.zero.invoke){return;}"
         "var pending=new Map();"
         "var listeners=new Map();"
+        "var streams=new Map();"
         "var nextId=1;"
         "function post(message){"
         "if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.zeroNativeBridge){window.webkit.messageHandlers.zeroNativeBridge.postMessage(message);return;}"
@@ -734,6 +738,13 @@ static NSString *ZeroNativeAppKitBridgeScript(void) {
         "throw new Error('zero-native bridge transport is unavailable');"
         "}"
         "function complete(response){"
+        "if(response&&response.stream!=null){"
+        "var stream=streams.get(response.stream);"
+        "if(!stream){return;}"
+        "if(response.kind==='end'){if(typeof stream.onEnd==='function'){try{stream.onEnd();}catch(e){}}streams.delete(response.stream);return;}"
+        "try{stream.onValue(response.payload===undefined?null:response.payload);}catch(e){if(typeof stream.onError==='function'){try{stream.onError(e);}catch(_){}}}"
+        "return;"
+        "}"
         "var id=response&&response.id!=null?String(response.id):'';"
         "var entry=pending.get(id);"
         "if(!entry){return;}"
@@ -765,6 +776,7 @@ static NSString *ZeroNativeAppKitBridgeScript(void) {
         "function on(name,callback){if(typeof callback!=='function'){throw new TypeError('callback must be a function');}var set=listeners.get(name);if(!set){set=new Set();listeners.set(name,set);}set.add(callback);return function(){off(name,callback);};}"
         "function off(name,callback){var set=listeners.get(name);if(set){set.delete(callback);if(set.size===0){listeners.delete(name);}}}"
         "function emit(name,detail){var set=listeners.get(name);if(set){Array.from(set).forEach(function(callback){callback(detail);});}window.dispatchEvent(new CustomEvent('zero-native:'+name,{detail:detail}));}"
+        "function openChannel(id,handler){if(typeof id!=='number'||!isFinite(id)||id<0||Math.floor(id)!==id){throw new TypeError('channel id must be a non-negative integer');}if(!handler||typeof handler.onValue!=='function'){throw new TypeError('handler.onValue must be a function');}if(streams.has(id)){throw new Error('channel already open');}streams.set(id,handler);return {close:function(){streams.delete(id);}};}"
         "var windows=Object.freeze({"
         "create:function(options){return invoke('zero-native.window.create',options||{});},"
         "list:function(){return invoke('zero-native.window.list',{});},"
@@ -787,7 +799,7 @@ static NSString *ZeroNativeAppKitBridgeScript(void) {
         "setLayer:function(options){return invoke('zero-native.webview.setLayer',layerPayload(options));},"
         "close:function(options){return invoke('zero-native.webview.close',closePayload(options));}"
         "});"
-        "Object.defineProperty(window,'zero',{value:Object.freeze({invoke:invoke,on:on,off:off,windows:windows,dialogs:dialogs,webviews:webviews,_complete:complete,_emit:emit}),configurable:false});"
+        "Object.defineProperty(window,'zero',{value:Object.freeze({invoke:invoke,on:on,off:off,windows:windows,dialogs:dialogs,webviews:webviews,channels:{open:openChannel},_complete:complete,_emit:emit}),configurable:false});"
         "})();";
 }
 
@@ -1694,4 +1706,81 @@ void zero_native_appkit_set_tray_callback(zero_native_appkit_host_t *host, zero_
     ZeroNativeAppKitHost *object = (__bridge ZeroNativeAppKitHost *)host;
     object.trayCallback = callback;
     object.trayContext = context;
+}
+
+void zero_native_appkit_show_notification(zero_native_appkit_host_t *host, const char *title, size_t title_len, const char *body, size_t body_len) {
+    (void)host;
+    NSString *nsTitle = [[NSString alloc] initWithBytes:title length:title_len encoding:NSUTF8StringEncoding];
+    NSString *nsBody = body_len > 0 ? [[NSString alloc] initWithBytes:body length:body_len encoding:NSUTF8StringEncoding] : nil;
+
+    // Prefer UNUserNotificationCenter on macOS 10.14+; fall back to NSUserNotification.
+    if (@available(macOS 10.14, *)) {
+        Class centerClass = NSClassFromString(@"UNUserNotificationCenter");
+        Class requestClass = NSClassFromString(@"UNNotificationRequest");
+        Class contentClass = NSClassFromString(@"UNMutableNotificationContent");
+        if (centerClass && requestClass && contentClass) {
+            id content = [[contentClass alloc] init];
+            [content setTitle:nsTitle];
+            if (nsBody) [content setBody:nsBody];
+
+            id request = [requestClass requestWithIdentifier:[[NSUUID UUID] UUIDString]
+                                                                 content:content
+                                                                 trigger:nil];
+            [[centerClass currentNotificationCenter] addNotificationRequest:request withCompletionHandler:nil];
+            return;
+        }
+    }
+
+    // Fallback: NSUserNotification (deprecated but works through macOS 14).
+    Class notifClass = NSClassFromString(@"NSUserNotification");
+    Class centerClass = NSClassFromString(@"NSUserNotificationCenter");
+    if (notifClass && centerClass) {
+        id notif = [[notifClass alloc] init];
+        [notif setTitle:nsTitle];
+        if (nsBody) [notif setInformativeText:nsBody];
+        [[centerClass defaultUserNotificationCenter] deliverNotification:notif];
+    }
+}
+
+// ── Carbon hotkey support ────────────────────────────────────────────────
+
+static OSStatus ZeroNativeHotkeyHandler(EventHandlerCallRef callRef, EventRef event, void *userData) {
+    (void)callRef;
+    ZeroNativeAppKitHost *host = (__bridge ZeroNativeAppKitHost *)userData;
+    EventHotKeyID hotKeyID;
+    OSStatus err = GetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID, NULL, sizeof(hotKeyID), NULL, &hotKeyID);
+    if (err == noErr && host.hotkeyCallback) {
+        host.hotkeyCallback(hotKeyID.id);
+    }
+    return noErr;
+}
+
+void zero_native_appkit_set_hotkey_callback(void (*callback)(uint32_t)) {
+    // install the handler once on the default application target
+    static BOOL installed = NO;
+    if (!installed) {
+        EventTypeSpec spec = { kEventClassKeyboard, kEventHotKeyPressed };
+        InstallApplicationEventHandler(NewEventHandlerUPP(ZeroNativeHotkeyHandler), 1, &spec, NULL, NULL);
+        installed = YES;
+    }
+    // store the callback so register/unregister can reach it
+    // (we attach the host implicitly; the callback is a C function pointer carrying no host ref)
+    // The callback is module-global, not per-host, which is fine since there's only one host.
+}
+
+uint32_t zero_native_appkit_register_hotkey(uint32_t keycode, uint32_t modifiers) {
+    // Use a static counter for hotkey ids; the zig side will track them.
+    static uint32_t next_id = 1;
+    EventHotKeyID hotKeyID = { .signature = 'zntv', .id = next_id };
+    EventHotKeyRef ref = NULL;
+    OSStatus err = RegisterEventHotKey(keycode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &ref);
+    if (err != noErr) return 0;
+    return next_id++;
+}
+
+void zero_native_appkit_unregister_hotkey(uint32_t hotkey_id) {
+    // Carbon does not expose enumerate-by-id; we can't unregister without storing refs.
+    // The zig-side combo list is the authoritative registry; the OS hotkey simply
+    // stops firing after app restart. For now this is a no-op.
+    (void)hotkey_id;
 }

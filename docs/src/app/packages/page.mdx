@@ -26,3 +26,42 @@ npm install -g zero-native
 ```
 
 The npm package includes prebuilt binaries for macOS (arm64/x64), Linux (gnu/musl, arm64/x64), and Windows (x64). See `packages/zero-native/` in the repository for the wrapper scripts and packaging metadata.
+
+## GitHub Action
+
+The repository includes a reusable composite action at `.github/actions/build-zero-native-app/action.yml` that sets up the required Zig toolchain and runs `zig build` for any zero-native app.
+
+### Inputs
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `app-path` | yes | — | Path to the app directory (the one containing `build.zig`). |
+| `target` | no | (native) | Zig target triple, e.g. `aarch64-macos` or `x86_64-windows`. When omitted the host target is used. |
+| `web-engine` | no | (default) | Web engine override: `system` or `chromium`. |
+| `optimize` | no | `ReleaseSmall` | Compilation optimization mode. |
+| `cef-dir` | no | — | Path to the CEF runtime directory for Chromium builds. |
+
+### Outputs
+
+| Output | Description |
+| --- | --- |
+| `binary-path` | Absolute path to the built binary (with `.exe` suffix on Windows). |
+
+### Example
+
+```yaml
+- uses: actions/checkout@v4
+- uses: ./.github/actions/build-zero-native-app
+  id: build
+  with:
+    app-path: ./my-app
+    target: aarch64-macos
+    web-engine: system
+- run: echo "Built ${{ steps.build.outputs.binary-path }}"
+```
+
+### Caveats
+
+- The action installs Zig using `mlugg/setup-zig@v2`. It does **not** install platform runtimes such as CEF or WebView2; those must be present on the runner or supplied by the app's build options.
+- Cross-compilation between OS families requires a native runner or additional sysroot setup.
+- Windows runners use Git Bash for the build script so that paths and shell behavior are consistent across platforms.

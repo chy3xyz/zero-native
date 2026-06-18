@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub const default_version = "144.0.6+g5f7e671+chromium-144.0.7559.59";
-pub const default_prepared_download_url = "https://github.com/vercel-labs/zero-native/releases/download";
+pub const default_prepared_download_url = "https://github.com/chy3xyz/zero-native/releases/download";
 pub const default_official_download_url = "https://cef-builds.spotifycdn.com";
 pub const default_download_url = default_prepared_download_url;
 pub const default_macos_dir = "third_party/cef/macos";

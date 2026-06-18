@@ -1,6 +1,6 @@
 const std = @import("std");
 const event_mod = @import("event.zig");
-const platform = @import("../platform/root.zig");
+const platform = @import("platform");
 const Runtime = @import("root.zig").Runtime;
 
 /// App-provided startup callback. Return type is `anyerror` because app

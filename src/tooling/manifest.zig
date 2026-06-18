@@ -39,6 +39,9 @@ pub const Metadata = struct {
     frontend: ?FrontendMetadata = null,
     security: SecurityMetadata = .{},
     windows: []const WindowMetadata = &.{},
+    updates: UpdatesMetadata = .{},
+    /// Custom URL schemes for deep-link routing.
+    deep_link_schemes: []const []const u8 = &.{},
 
     pub fn displayName(self: Metadata) []const u8 {
         return self.display_name orelse self.name;
@@ -99,7 +102,17 @@ pub const Metadata = struct {
             if (window.title) |title| allocator.free(title);
         }
         if (self.windows.len > 0) allocator.free(self.windows);
+        if (self.updates.feed_url.len > 0) allocator.free(self.updates.feed_url);
+        if (self.updates.public_key.len > 0) allocator.free(self.updates.public_key);
+        for (self.deep_link_schemes) |value| allocator.free(value);
+        if (self.deep_link_schemes.len > 0) allocator.free(self.deep_link_schemes);
     }
+};
+
+pub const UpdatesMetadata = struct {
+    feed_url: []const u8 = "",
+    public_key: []const u8 = "",
+    check_on_start: bool = false,
 };
 
 pub const BridgeCommandMetadata = struct {
@@ -264,6 +277,12 @@ pub fn parseText(allocator: std.mem.Allocator, source: []const u8) !Metadata {
     metadata.capabilities = try convertRawSecurityCapabilities(allocator, raw.capabilities);
     metadata.bridge_commands = try convertRawBridgeCommands(allocator, raw.bridge.commands);
     metadata.plugins = try duplicateStringList(allocator, raw.plugins);
+    metadata.updates = .{
+        .feed_url = try allocator.dupe(u8, raw.updates.feed_url),
+        .public_key = try allocator.dupe(u8, raw.updates.public_key),
+        .check_on_start = raw.updates.check_on_start,
+    };
+    metadata.deep_link_schemes = try duplicateStringList(allocator, raw.deep_link_schemes);
     metadata.frontend = try convertRawFrontend(allocator, raw.frontend);
     const action = try allocator.dupe(u8, raw.security.navigation.external_links.action);
     errdefer allocator.free(action);
@@ -819,6 +838,26 @@ test "manifest metadata parser reads frontend config" {
     try std.testing.expectEqualStrings("http://127.0.0.1:5173/", metadata.frontend.?.dev.?.url);
     try std.testing.expectEqualStrings("npm", metadata.frontend.?.dev.?.command[0]);
     try std.testing.expectEqual(@as(u32, 12000), metadata.frontend.?.dev.?.timeout_ms);
+}
+
+test "manifest metadata parser reads updates config" {
+    const metadata = try parseText(std.testing.allocator,
+        \\.{
+        \\  .id = "com.example.app",
+        \\  .name = "example",
+        \\  .version = "1.2.3",
+        \\  .updates = .{
+        \\    .feed_url = "https://example.com/releases/feed.json",
+        \\    .public_key = "base64-ed25519-public-key",
+        \\    .check_on_start = true,
+        \\  },
+        \\}
+    );
+    defer metadata.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("https://example.com/releases/feed.json", metadata.updates.feed_url);
+    try std.testing.expectEqualStrings("base64-ed25519-public-key", metadata.updates.public_key);
+    try std.testing.expect(metadata.updates.check_on_start);
 }
 
 test "Metadata.deinit frees all owned fields" {

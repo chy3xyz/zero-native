@@ -1,0 +1,39 @@
+# Plugin: CLI
+
+Exposes process arguments and subcommand matching to the frontend.
+
+## Commands
+
+| Command | Payload | Description |
+|---------|---------|-------------|
+| `cli.args` | ignored | Records `argv` after the program name in `state.args` |
+| `cli.matches` | `sub\|sub-sub\|...` | Records split subcommand tokens in `state.matches` |
+
+## State
+
+- `state.args` — raw CLI arguments
+- `state.matches` — subcommand tokens supplied by the app
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('cli.args');
+await invoke('cli.matches', 'open|settings');
+```
+
+## Notes
+
+- `cli.matches` does not validate tokens; it simply records them so the frontend can route views.
+- The `custom/cli` capability kind allows `registry.hasCapability(.custom)` queries to succeed.
+
+## Lifecycle
+
+```zig
+const module = try plugin_cli.create(allocator);
+try registry.startAll(runtime);
+// ... dispatch cli.* commands ...
+try registry.stopAll(runtime);
+```
+
+`stop` frees the owned argument/match slices and destroys the owned `CliState`. See [Extensions](/extensions) for the module lifecycle.

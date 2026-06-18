@@ -1,8 +1,8 @@
-const platform = @import("../platform/root.zig");
+const platform = @import("platform");
 const trace = @import("trace");
 const bridge = @import("../bridge/root.zig");
 const extensions = @import("../extensions/root.zig");
-const security = @import("../security/root.zig");
+const security = @import("security");
 const automation = @import("../automation/root.zig");
 const window_state = @import("../window_state/root.zig");
 

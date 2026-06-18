@@ -11,11 +11,14 @@ pub const Error = error{
     OutOfMemory,
 };
 
-const PluginConfig = struct {
+pub const PluginConfig = struct {
     app_name: []const u8 = "",
     current_version: []const u8 = "",
     manifest_url: []const u8 = "",
     public_key_b64: []const u8 = "",
+    check_on_start: bool = false,
+    deep_link_schemes: []const []const u8 = &.{},
+    custom_plugins: []const extensions.Plugin = &.{},
 };
 
 /// Instantiates the plugins named in `names` and returns them as a
@@ -91,15 +94,15 @@ fn createPlugin(
     } else if (std.mem.eql(u8, name, "http")) {
         return @import("plugin_http.zig").create(allocator, io);
     } else if (std.mem.eql(u8, name, "deep-link")) {
-        return @import("plugin_deep_link.zig").create(allocator);
+        return @import("plugin_deep_link.zig").create(allocator, config.deep_link_schemes);
     } else if (std.mem.eql(u8, name, "store")) {
-        return @import("plugin_store.zig").create(allocator);
+        return @import("plugin_store.zig").create(allocator, io, "");
     } else if (std.mem.eql(u8, name, "autostart")) {
         return @import("plugin_autostart.zig").create(allocator, io, config.app_name, null);
     } else if (std.mem.eql(u8, name, "single-instance")) {
         return @import("plugin_single_instance.zig").create(allocator, io);
     } else if (std.mem.eql(u8, name, "updater")) {
-        return @import("plugin_updater.zig").create(allocator, io, config.current_version, config.manifest_url, config.public_key_b64);
+        return @import("plugin_updater.zig").create(allocator, io, config.current_version, config.manifest_url, config.public_key_b64, config.check_on_start);
     } else if (std.mem.eql(u8, name, "global-shortcut")) {
         return @import("plugin_global_shortcut.zig").create(allocator, io);
     } else if (std.mem.eql(u8, name, "websocket")) {
@@ -112,6 +115,29 @@ fn createPlugin(
         return @import("plugin_log.zig").create(allocator);
     } else if (std.mem.eql(u8, name, "cli")) {
         return @import("plugin_cli.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "sql")) {
+        return @import("plugin_sql.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "path")) {
+        return @import("plugin_path.zig").create(allocator, config.app_name);
+    } else if (std.mem.eql(u8, name, "fs")) {
+        return @import("plugin_fs.zig").create(allocator, io);
+    } else if (std.mem.eql(u8, name, "dialog")) {
+        return @import("plugin_dialog.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "env")) {
+        return @import("plugin_env.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "random")) {
+        return @import("plugin_random.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "crypto")) {
+        return @import("plugin_crypto.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "window")) {
+        return @import("plugin_window.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "tray")) {
+        return @import("plugin_tray.zig").create(allocator);
+    }
+    for (config.custom_plugins) |plugin| {
+        if (std.mem.eql(u8, name, plugin.name)) {
+            return plugin.create_fn(allocator);
+        }
     }
     return error.UnknownPlugin;
 }

@@ -187,6 +187,30 @@ fn runToolCapturingStderr(allocator: std.mem.Allocator, io: std.Io, argv: []cons
     }
 }
 
+/// Run a tool using `std.process.run` and fail on non-zero exit. Captures
+/// stdout/stderr for diagnostics and always logs the captured stderr when
+/// the tool reports an error. Uses argv-form invocation — never `sh -c`.
+fn runTool(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
+    const result = try std.process.run(allocator, io, .{
+        .argv = argv,
+        .stdout_limit = std.Io.Limit.limited(4096),
+        .stderr_limit = std.Io.Limit.limited(8192),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| {
+            if (code == 0) return;
+            std.log.err("installer.tool_nonzero_exit: argv[0]={s} code={d} stderr={s}", .{ argv[0], code, result.stderr });
+            return error.InstallerToolFailed;
+        },
+        else => {
+            std.log.err("installer.tool_abnormal_exit: argv[0]={s} term={t}", .{ argv[0], result.term });
+            return error.InstallerToolFailed;
+        },
+    }
+}
+
 fn pathExists(io: std.Io, path: []const u8) bool {
     _ = std.Io.Dir.cwd().statFile(io, path, .{}) catch return false;
     return true;
@@ -234,11 +258,6 @@ fn outputPath(allocator: std.mem.Allocator, options: InstallerOptions) ![]u8 {
 // extend; the template and detection are already in place.
 
 fn generateMsi(allocator: std.mem.Allocator, io: std.Io, options: InstallerOptions) !InstallerResult {
-    const tool = options.kind.toolCommand();
-    if (!isToolAvailable(io, .msi)) {
-        std.log.warn("installer.msi_tool_missing: tool={s} kind={s}", .{ tool, options.kind.displayName() });
-        return error.InstallerToolNotFound;
-    }
     const output = try outputPath(allocator, options);
     errdefer allocator.free(output);
     try ensureDir(io, options.output_dir);
@@ -247,38 +266,64 @@ fn generateMsi(allocator: std.mem.Allocator, io: std.Io, options: InstallerOptio
     defer allocator.free(staging);
     try ensureDir(io, staging);
 
-    // STRUCTURAL STUB: this is the WiX 3 product.wxs skeleton. The real
-    // implementation needs candle + light invocations and a per-arch
-    // Component/Feature tree sourced from `options.source_path`. The
-    // template below is intentionally minimal so that the file is at
-    // least valid XML; extending it is the next wave of work.
     const wxs_path = try std.fs.path.join(allocator, &.{ staging, "product.wxs" });
     defer allocator.free(wxs_path);
-    const wxs = try renderWixTemplate(allocator, options);
+    const wxs = try renderWixTemplate(allocator, io, options);
     defer allocator.free(wxs);
     try writeAll(io, wxs_path, wxs);
 
-    // STRUCTURAL STUB: real implementation would run
-    //   candle.exe -out product.wixobj product.wxs
-    //   light.exe -o <output>.msi product.wixobj
-    // For now the function intentionally stops short of that.
-    std.log.warn("installer.msi_stub: tool={s} detected but invocation not implemented", .{tool});
-    return error.InstallerToolNotFound;
+    if (!isMsiToolAvailable(io)) {
+        std.log.warn("installer.msi_tool_missing: tools={s},{s} kind={s}", .{ "candle", "light", options.kind.displayName() });
+        return error.InstallerToolNotFound;
+    }
+
+    const wixobj_path = try std.fs.path.join(allocator, &.{ staging, "product.wixobj" });
+    defer allocator.free(wixobj_path);
+
+    const candle_argv = [_][]const u8{
+        "candle",
+        "-arch", "x64",
+        "-out", wixobj_path,
+        wxs_path,
+    };
+    try runTool(allocator, io, &candle_argv);
+
+    const light_argv = [_][]const u8{
+        "light",
+        "-o", output,
+        wixobj_path,
+    };
+    try runTool(allocator, io, &light_argv);
+
+    const bytes = try fileSize(io, output);
+    return .{ .installer_path = output, .bytes_written = bytes };
 }
 
-fn renderWixTemplate(allocator: std.mem.Allocator, options: InstallerOptions) ![]u8 {
-    // WiX 3 namespace and minimal Product element. The actual File /
-    // Component / Feature tree is left to the implementation that
-    // follows this stub.
+fn isMsiToolAvailable(io: std.Io) bool {
+    return commandAvailable(io, "candle") and commandAvailable(io, "light");
+}
+
+const WixFileTree = struct {
+    directory_xml: []u8,
+    component_refs_xml: []u8,
+};
+
+fn renderWixTemplate(allocator: std.mem.Allocator, io: std.Io, options: InstallerOptions) ![]u8 {
+    const tree = try buildWixFileTree(allocator, io, options);
+    defer allocator.free(tree.directory_xml);
+    defer allocator.free(tree.component_refs_xml);
     return std.fmt.allocPrint(allocator,
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-        \\  <Product Id="*" Name="{s}" Version="{s}" Manufacturer="{s}" UpgradeCode="{{{s}}}">
-        \\    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+        \\  <Product Id="*" Name="{s}" Version="{s}" Manufacturer="{s}" UpgradeCode="{{{s}}}" Language="1033" Codepage="1252">
+        \\    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
         \\    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+        \\    <MediaTemplate EmbedCab="yes" />
         \\    <Feature Id="ProductFeature" Title="{s}" Level="1">
         \\      <ComponentGroupRef Id="ProductComponents" />
         \\    </Feature>
+        \\{s}    <ComponentGroup Id="ProductComponents">
+        \\{s}    </ComponentGroup>
         \\  </Product>
         \\</Wix>
         \\
@@ -288,7 +333,123 @@ fn renderWixTemplate(allocator: std.mem.Allocator, options: InstallerOptions) ![
         options.maintainer orelse "zero-native",
         options.app_id,
         options.app_name,
+        tree.directory_xml,
+        tree.component_refs_xml,
     });
+}
+
+fn buildWixFileTree(allocator: std.mem.Allocator, io: std.Io, options: InstallerOptions) !WixFileTree {
+    var directory_xml = std.ArrayList(u8).empty;
+    errdefer directory_xml.deinit(allocator);
+    var component_refs_xml = std.ArrayList(u8).empty;
+    errdefer component_refs_xml.deinit(allocator);
+
+    try directory_xml.appendSlice(allocator,
+        \\    <Directory Id="TARGETDIR" Name="SourceDir">
+        \\      <Directory Id="ProgramFiles64Folder">
+        \\        <Directory Id="INSTALLDIR" Name="
+    );
+    try appendXmlEscaped(&directory_xml, allocator, options.app_name);
+    try directory_xml.appendSlice(allocator, "\">\n");
+
+    if (pathExists(io, options.source_path)) {
+        const stat = try std.Io.Dir.cwd().statFile(io, options.source_path, .{});
+        if (stat.kind == .directory) {
+            var src_dir = try std.Io.Dir.cwd().openDir(io, options.source_path, .{ .iterate = true });
+            defer src_dir.close(io);
+            var walker = try src_dir.walk(allocator);
+            defer walker.deinit();
+            while (try walker.next(io)) |entry| {
+                if (entry.kind != .file) continue;
+                const full = try std.fs.path.join(allocator, &.{ options.source_path, entry.path });
+                defer allocator.free(full);
+                const id = try wixFileId(allocator, entry.path);
+                defer allocator.free(id);
+                try appendWixFileComponent(&directory_xml, allocator, id, full, 8);
+                try appendIndent(&component_refs_xml, allocator, 6);
+                try component_refs_xml.appendSlice(allocator, "<ComponentRef Id=\"cmp_");
+                try component_refs_xml.appendSlice(allocator, id);
+                try component_refs_xml.appendSlice(allocator, "\" />\n");
+            }
+        } else {
+            const id = try wixFileId(allocator, std.fs.path.basename(options.source_path));
+            defer allocator.free(id);
+            try appendWixFileComponent(&directory_xml, allocator, id, options.source_path, 8);
+            try appendIndent(&component_refs_xml, allocator, 6);
+            try component_refs_xml.appendSlice(allocator, "<ComponentRef Id=\"cmp_");
+            try component_refs_xml.appendSlice(allocator, id);
+            try component_refs_xml.appendSlice(allocator, "\" />\n");
+        }
+    }
+
+    try directory_xml.appendSlice(allocator, "        </Directory>\n      </Directory>\n    </Directory>\n");
+
+    return .{
+        .directory_xml = try directory_xml.toOwnedSlice(allocator),
+        .component_refs_xml = try component_refs_xml.toOwnedSlice(allocator),
+    };
+}
+
+fn appendWixFileComponent(xml: *std.ArrayList(u8), allocator: std.mem.Allocator, id: []const u8, src_path: []const u8, indent: usize) !void {
+    try appendIndent(xml, allocator, indent);
+    try xml.appendSlice(allocator, "<Component Id=\"cmp_");
+    try xml.appendSlice(allocator, id);
+    try xml.appendSlice(allocator, "\" Guid=\"*\">\n");
+    try appendIndent(xml, allocator, indent + 2);
+    try xml.appendSlice(allocator, "<File Id=\"fil_");
+    try xml.appendSlice(allocator, id);
+    try xml.appendSlice(allocator, "\" Source=\"");
+    try appendXmlEscaped(xml, allocator, src_path);
+    try xml.appendSlice(allocator, "\" KeyPath=\"yes\" />\n");
+    try appendIndent(xml, allocator, indent);
+    try xml.appendSlice(allocator, "</Component>\n");
+}
+
+fn appendIndent(xml: *std.ArrayList(u8), allocator: std.mem.Allocator, indent: usize) !void {
+    var i: usize = 0;
+    while (i < indent) : (i += 1) {
+        try xml.appendSlice(allocator, "  ");
+    }
+}
+
+fn wixFileId(allocator: std.mem.Allocator, rel_path: []const u8) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    for (rel_path) |c| {
+        if (std.ascii.isAlphanumeric(c)) {
+            try buf.append(allocator, c);
+        } else {
+            try buf.append(allocator, '_');
+        }
+    }
+    if (buf.items.len == 0) {
+        try buf.appendSlice(allocator, "file");
+    }
+    const needs_underscore = std.ascii.isDigit(buf.items[0]);
+    const max_len = 64;
+    const content_len = if (buf.items.len > max_len) max_len else buf.items.len;
+    const total_len = if (needs_underscore) content_len + 1 else content_len;
+    const result = try allocator.alloc(u8, total_len);
+    if (needs_underscore) {
+        result[0] = '_';
+        @memcpy(result[1..][0..content_len], buf.items[0..content_len]);
+    } else {
+        @memcpy(result[0..][0..content_len], buf.items[0..content_len]);
+    }
+    return result;
+}
+
+fn appendXmlEscaped(xml: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
+    for (text) |c| {
+        switch (c) {
+            '&' => try xml.appendSlice(allocator, "&amp;"),
+            '<' => try xml.appendSlice(allocator, "&lt;"),
+            '>' => try xml.appendSlice(allocator, "&gt;"),
+            '"' => try xml.appendSlice(allocator, "&quot;"),
+            '\'' => try xml.appendSlice(allocator, "&apos;"),
+            else => try xml.append(allocator, c),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -301,10 +462,6 @@ fn renderWixTemplate(allocator: std.mem.Allocator, options: InstallerOptions) ![
 // be fed directly to `makensis` to produce the installer.
 
 fn generateNsis(allocator: std.mem.Allocator, io: std.Io, options: InstallerOptions) !InstallerResult {
-    if (!isToolAvailable(io, .nsis)) {
-        std.log.warn("installer.nsis_tool_missing: tool={s}", .{options.kind.toolCommand()});
-        return error.InstallerToolNotFound;
-    }
     const output = try outputPath(allocator, options);
     errdefer allocator.free(output);
     try ensureDir(io, options.output_dir);
@@ -315,12 +472,23 @@ fn generateNsis(allocator: std.mem.Allocator, io: std.Io, options: InstallerOpti
     defer allocator.free(nsi);
     try writeAll(io, nsi_path, nsi);
 
-    // STRUCTURAL STUB: real implementation would run
-    //   makensis /DPRODUCT_OUTPUT=<output> <nsi_path>
-    // and then return. The NSI script is generated correctly; the
-    // invocation is deferred.
-    std.log.warn("installer.nsis_stub: tool={s} detected but invocation not implemented", .{options.kind.toolCommand()});
-    return error.InstallerToolNotFound;
+    if (!isToolAvailable(io, .nsis)) {
+        std.log.warn("installer.nsis_tool_missing: tool={s}", .{options.kind.toolCommand()});
+        return error.InstallerToolNotFound;
+    }
+
+    const output_define = try std.fmt.allocPrint(allocator, "/DPRODUCT_OUTPUT={s}", .{output});
+    defer allocator.free(output_define);
+
+    const argv = [_][]const u8{
+        "makensis",
+        output_define,
+        nsi_path,
+    };
+    try runTool(allocator, io, &argv);
+
+    const bytes = try fileSize(io, output);
+    return .{ .installer_path = output, .bytes_written = bytes };
 }
 
 fn renderNsisTemplate(allocator: std.mem.Allocator, options: InstallerOptions) ![]u8 {
@@ -328,6 +496,7 @@ fn renderNsisTemplate(allocator: std.mem.Allocator, options: InstallerOptions) !
         \\!include "MUI2.nsh"
         \\
         \\Name "{s}"
+        \\OutFile "${{PRODUCT_OUTPUT}}"
         \\VIProductVersion "{s}.0"
         \\InstallDir "$PROGRAMFILES64\\{s}"
         \\RequestExecutionLevel highest
@@ -527,10 +696,6 @@ fn renderDebDesktopEntry(allocator: std.mem.Allocator, options: InstallerOptions
 // ready to be extended with a single spawn call.
 
 fn generateAppImage(allocator: std.mem.Allocator, io: std.Io, options: InstallerOptions) !InstallerResult {
-    if (!isToolAvailable(io, .appimage)) {
-        std.log.warn("installer.appimage_tool_missing: tool={s}", .{options.kind.toolCommand()});
-        return error.InstallerToolNotFound;
-    }
     const output = try outputPath(allocator, options);
     errdefer allocator.free(output);
     try ensureDir(io, options.output_dir);
@@ -564,15 +729,29 @@ fn generateAppImage(allocator: std.mem.Allocator, io: std.Io, options: Installer
             const dir_icon = try std.fs.path.join(allocator, &.{ appdir, ".DirIcon" });
             defer allocator.free(dir_icon);
             try copyPath(allocator, io, icon, dir_icon);
+            // Also copy as <app_name>.png so the desktop entry icon name resolves.
+            const app_icon = try std.fs.path.join(allocator, &.{ appdir, options.app_name });
+            defer allocator.free(app_icon);
+            const app_icon_png = try std.fmt.allocPrint(allocator, "{s}.png", .{app_icon});
+            defer allocator.free(app_icon_png);
+            try copyPath(allocator, io, icon, app_icon_png);
         }
     }
 
-    // STRUCTURAL STUB: real implementation would run
-    //   appimagetool <appdir>
-    // from inside `options.output_dir` and write the AppImage to
-    // `output`. The directory layout is fully prepared.
-    std.log.warn("installer.appimage_stub: tool={s} detected but invocation not implemented", .{options.kind.toolCommand()});
-    return error.InstallerToolNotFound;
+    if (!isToolAvailable(io, .appimage)) {
+        std.log.warn("installer.appimage_tool_missing: tool={s}", .{options.kind.toolCommand()});
+        return error.InstallerToolNotFound;
+    }
+
+    const argv = [_][]const u8{
+        "appimagetool",
+        appdir,
+        output,
+    };
+    try runTool(allocator, io, &argv);
+
+    const bytes = try fileSize(io, output);
+    return .{ .installer_path = output, .bytes_written = bytes };
 }
 
 // ---------------------------------------------------------------------------
@@ -676,23 +855,93 @@ test "generate deb propagates InstallerToolNotFound when tool is missing" {
     try std.testing.expectError(error.InstallerToolNotFound, generate(allocator, io, opts));
 }
 
-test "generate msi on non-Windows host returns InstallerToolNotFound" {
+test "generate msi writes product.wxs and returns InstallerToolNotFound when WiX missing" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    if (builtin.target.os.tag == .windows) return; // can't test on Windows
+    const output_dir = ".zig-cache/test-installer-msi-generate";
+    std.Io.Dir.cwd().deleteTree(io, output_dir) catch {};
+
     const opts = InstallerOptions{
         .kind = .msi,
         .source_path = "/nonexistent",
-        .output_dir = ".zig-cache/test-installer-msi",
+        .output_dir = output_dir,
         .app_id = "dev.zero_native.test",
         .app_name = "zero-native-msi",
         .app_version = "0.0.1",
     };
-    try std.testing.expectError(error.InstallerToolNotFound, generate(allocator, io, opts));
+
+    if (isMsiToolAvailable(io)) {
+        const result = try generate(allocator, io, opts);
+        defer result.deinit(allocator);
+        try std.testing.expect(std.mem.endsWith(u8, result.installer_path, ".msi"));
+        try std.testing.expect(result.bytes_written > 0);
+    } else {
+        try std.testing.expectError(error.InstallerToolNotFound, generate(allocator, io, opts));
+        const wxs_path = try std.fs.path.join(allocator, &.{ output_dir, "msi-staging", "product.wxs" });
+        defer allocator.free(wxs_path);
+        try std.testing.expect(pathExists(io, wxs_path));
+    }
+}
+
+test "generate nsis writes installer.nsi and returns InstallerToolNotFound when makensis missing" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const output_dir = ".zig-cache/test-installer-nsis-generate";
+    std.Io.Dir.cwd().deleteTree(io, output_dir) catch {};
+
+    const opts = InstallerOptions{
+        .kind = .nsis,
+        .source_path = "/nonexistent",
+        .output_dir = output_dir,
+        .app_id = "dev.zero_native.test",
+        .app_name = "zero-native-nsis",
+        .app_version = "0.0.1",
+    };
+
+    if (isToolAvailable(io, .nsis)) {
+        const result = try generate(allocator, io, opts);
+        defer result.deinit(allocator);
+        try std.testing.expect(std.mem.endsWith(u8, result.installer_path, ".exe"));
+        try std.testing.expect(result.bytes_written > 0);
+    } else {
+        try std.testing.expectError(error.InstallerToolNotFound, generate(allocator, io, opts));
+        const nsi_path = try std.fs.path.join(allocator, &.{ output_dir, "installer.nsi" });
+        defer allocator.free(nsi_path);
+        try std.testing.expect(pathExists(io, nsi_path));
+    }
+}
+
+test "generate appimage creates AppDir and returns InstallerToolNotFound when appimagetool missing" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const output_dir = ".zig-cache/test-installer-appimage-generate";
+    std.Io.Dir.cwd().deleteTree(io, output_dir) catch {};
+
+    const opts = InstallerOptions{
+        .kind = .appimage,
+        .source_path = "/nonexistent",
+        .output_dir = output_dir,
+        .app_id = "dev.zero_native.test",
+        .app_name = "zero-native-appimage",
+        .app_version = "0.0.1",
+    };
+
+    if (isToolAvailable(io, .appimage)) {
+        const result = try generate(allocator, io, opts);
+        defer result.deinit(allocator);
+        try std.testing.expect(std.mem.endsWith(u8, result.installer_path, ".AppImage"));
+        try std.testing.expect(result.bytes_written > 0);
+    } else {
+        try std.testing.expectError(error.InstallerToolNotFound, generate(allocator, io, opts));
+        const desktop_path = try std.fs.path.join(allocator, &.{ output_dir, "AppDir", "zero-native-appimage.desktop" });
+        defer allocator.free(desktop_path);
+        try std.testing.expect(pathExists(io, desktop_path));
+    }
 }
 
 test "wix template includes product name and version" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     const opts = InstallerOptions{
         .kind = .msi,
         .source_path = "",
@@ -701,10 +950,35 @@ test "wix template includes product name and version" {
         .app_name = "WixApp",
         .app_version = "1.2.3",
     };
-    const xml = try renderWixTemplate(allocator, opts);
+    const xml = try renderWixTemplate(allocator, io, opts);
     defer allocator.free(xml);
     try std.testing.expect(std.mem.indexOf(u8, xml, "Name=\"WixApp\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, xml, "Version=\"1.2.3\"") != null);
+}
+
+test "wix template emits component for source file" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const source_dir = ".zig-cache/test-installer-wix-source";
+    const source_file = try std.fs.path.join(allocator, &.{ source_dir, "hello.txt" });
+    defer allocator.free(source_file);
+    std.Io.Dir.cwd().deleteTree(io, source_dir) catch {};
+    try ensureDir(io, source_dir);
+    try writeAll(io, source_file, "hello");
+
+    const opts = InstallerOptions{
+        .kind = .msi,
+        .source_path = source_dir,
+        .output_dir = "",
+        .app_id = "dev.zero_native.test",
+        .app_name = "WixApp",
+        .app_version = "1.0.0",
+    };
+    const xml = try renderWixTemplate(allocator, io, opts);
+    defer allocator.free(xml);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<Component Id=\"cmp_hello_txt\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "Source=\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "hello.txt\"") != null);
 }
 
 test "nsis template includes install dir and product name" {

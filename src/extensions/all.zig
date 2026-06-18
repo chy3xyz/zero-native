@@ -24,6 +24,7 @@ test {
     _ = @import("plugin_os.zig");
     _ = @import("plugin_log.zig");
     _ = @import("plugin_cli.zig");
+    _ = @import("plugin_sql.zig");
     _ = @import("http_client.zig");
     _ = @import("registry.zig");
     _ = @import("loader_test.zig");
@@ -59,27 +60,45 @@ test "all bundled plugins register without conflicts" {
     const os_mod = @import("plugin_os.zig");
     const log_mod = @import("plugin_log.zig");
     const cli_mod = @import("plugin_cli.zig");
+    const sql_mod = @import("plugin_sql.zig");
+    const path_mod = @import("plugin_path.zig");
+    const fs_mod = @import("plugin_fs.zig");
+    const dialog_mod = @import("plugin_dialog.zig");
+    const env_mod = @import("plugin_env.zig");
+    const random_mod = @import("plugin_random.zig");
+    const crypto_mod = @import("plugin_crypto.zig");
+    const window_mod = @import("plugin_window.zig");
+    const tray_mod = @import("plugin_tray.zig");
 
-    var modules: [15]extensions.Module = undefined;
+    var modules: [24]extensions.Module = undefined;
 
     modules[0] = try clipboard.create(allocator);
     modules[1] = try shell.create(allocator);
     modules[2] = try notification.create(allocator);
     modules[3] = try http.create(allocator, io);
-    modules[4] = try deep_link.create(allocator);
-    modules[5] = try store.create(allocator);
+    modules[4] = try deep_link.create(allocator, &.{});
+    modules[5] = try store.create(allocator, io, "");
     // `autostart.create` with a non-null `base_dir` skips the home-directory
     // lookup, so the test never depends on `$HOME`. The path itself does not
     // need to exist because we never call `autostart.enable`.
     modules[6] = try autostart.create(allocator, io, "all-plugins-test", ".zig-cache/all-plugins-test");
     modules[7] = try single_instance.create(allocator, io);
-    modules[8] = try updater.create(allocator, io, "0.0.0", "http://localhost/manifest.json", "");
+    modules[8] = try updater.create(allocator, io, "0.0.0", "http://localhost/manifest.json", "", false);
     modules[9] = try global_shortcut.create(allocator, io);
     modules[10] = try websocket.create(allocator);
     modules[11] = try process_mod.create(allocator);
     modules[12] = try os_mod.create(allocator);
     modules[13] = try log_mod.create(allocator);
     modules[14] = try cli_mod.create(allocator);
+    modules[15] = try sql_mod.create(allocator);
+    modules[16] = try path_mod.create(allocator, "all-plugins-test");
+    modules[17] = try fs_mod.create(allocator, io);
+    modules[18] = try dialog_mod.create(allocator);
+    modules[19] = try env_mod.create(allocator);
+    modules[20] = try random_mod.create(allocator);
+    modules[21] = try crypto_mod.create(allocator);
+    modules[22] = try window_mod.create(allocator);
+    modules[23] = try tray_mod.create(allocator);
 
     // Walk modules in reverse on failure so each `create`'s allocation
     // (and the state struct) is paired with a matching `stop_fn`. We

@@ -609,7 +609,7 @@ fn buildZon(allocator: std.mem.Allocator, names: TemplateNames) ![]const u8 {
     try out.appendSlice(allocator,
         \\,
         \\    .version = "0.1.0",
-        \\    .minimum_zig_version = "0.16.0",
+        \\    .minimum_zig_version = "0.17.0",
         \\    .dependencies = .{},
         \\    .paths = .{ "build.zig", "build.zig.zon", "src", "assets", "frontend", "app.zon", "README.md" },
         \\}

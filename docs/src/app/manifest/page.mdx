@@ -12,7 +12,7 @@ version = "1.2.3"
 icons = ["assets/icon.icns", "assets/icon.ico"]
 platforms = ["macos", "linux"]
 permissions = ["window", "filesystem"]
-capabilities = ["webview", "js_bridge", "native_module"]
+feature_capabilities = ["webview", "js_bridge", "native_module"]
 
 [[bridge.commands]]
 name = "native.ping"
@@ -24,7 +24,7 @@ name = "zero-native.window.create"
 permissions = ["window"]
 origins = ["zero://app"]
 
-plugins = ["clipboard", "shell", "notification", "http"]
+plugins = ["clipboard", "shell", "notification", "http", "deep-link", "store", "autostart", "single-instance", "updater", "global-shortcut", "websocket", "process", "os", "log", "cli", "sql"]
 
 [security.navigation]
 allowed_origins = ["zero://app", "http://127.0.0.1:5173"]
@@ -115,7 +115,7 @@ restore_state = true
       <td>Runtime permissions such as <code>network</code>, <code>filesystem</code>, <code>camera</code>, <code>window</code> (see <a href="/security">Security</a>)</td>
     </tr>
     <tr>
-      <td><code>capabilities</code></td>
+      <td><code>feature_capabilities</code></td>
       <td>string[]</td>
       <td><code>[]</code></td>
       <td>Feature declarations such as <code>webview</code>, <code>js_bridge</code>, <code>native_module</code> (see <a href="/security">Security</a> and <a href="/capabilities">Capabilities</a>)</td>

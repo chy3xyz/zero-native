@@ -84,7 +84,7 @@ fn runNull(app: zero_native.App, options: RunOptions, init: std.process.Init) !v
         .automation = if (build_options.automation) zero_native.automation.Server.init(init.io, ".zig-cache/zero-native-automation", app_info.resolvedWindowTitle()) else null,
         .window_state_store = store,
     });
-    try runtime.loadPlugins(std.heap.page_allocator, init.io, options.plugin_names);
+    try runtime.loadPlugins(std.heap.page_allocator, init.io, options.plugin_names, .{});
     defer runtime.deinit(std.heap.page_allocator);
 
     try runtime.run(app);
@@ -120,7 +120,7 @@ fn runMacos(app: zero_native.App, options: RunOptions, init: std.process.Init) !
         .automation = if (build_options.automation) zero_native.automation.Server.init(init.io, ".zig-cache/zero-native-automation", app_info.resolvedWindowTitle()) else null,
         .window_state_store = store,
     });
-    try runtime.loadPlugins(std.heap.page_allocator, init.io, options.plugin_names);
+    try runtime.loadPlugins(std.heap.page_allocator, init.io, options.plugin_names, .{});
     defer runtime.deinit(std.heap.page_allocator);
 
     try runtime.run(app);
@@ -156,7 +156,7 @@ fn runLinux(app: zero_native.App, options: RunOptions, init: std.process.Init) !
         .automation = if (build_options.automation) zero_native.automation.Server.init(init.io, ".zig-cache/zero-native-automation", app_info.resolvedWindowTitle()) else null,
         .window_state_store = store,
     });
-    try runtime.loadPlugins(std.heap.page_allocator, init.io, options.plugin_names);
+    try runtime.loadPlugins(std.heap.page_allocator, init.io, options.plugin_names, .{});
     defer runtime.deinit(std.heap.page_allocator);
 
     try runtime.run(app);
@@ -192,7 +192,7 @@ fn runWindows(app: zero_native.App, options: RunOptions, init: std.process.Init)
         .automation = if (build_options.automation) zero_native.automation.Server.init(init.io, ".zig-cache/zero-native-automation", app_info.resolvedWindowTitle()) else null,
         .window_state_store = store,
     });
-    try runtime.loadPlugins(std.heap.page_allocator, init.io, options.plugin_names);
+    try runtime.loadPlugins(std.heap.page_allocator, init.io, options.plugin_names, .{});
     defer runtime.deinit(std.heap.page_allocator);
 
     try runtime.run(app);

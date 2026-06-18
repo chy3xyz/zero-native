@@ -1,6 +1,6 @@
 const std = @import("std");
 const geometry = @import("geometry");
-const platform = @import("../platform/root.zig");
+const platform = @import("platform");
 
 pub const max_windows: usize = platform.max_windows;
 

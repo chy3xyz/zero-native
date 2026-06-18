@@ -1,0 +1,50 @@
+# Plugin: SQL
+
+Embedded SQLite database access for the frontend.
+
+## Commands
+
+| Command | Payload | Description |
+|---------|---------|-------------|
+| `sql.open` | `{"path":"app.db"}` | Opens or creates the SQLite database |
+| `sql.execute` | `{"sql":"...","params":[...]}` | Runs a statement; records `last_insert_rowid` and `changes` |
+| `sql.select` | `{"sql":"...","params":[...]}` | Runs a query; records rows as JSON |
+| `sql.close` | ignored | Closes the database handle |
+
+## State
+
+- `state.db` — optional open database handle
+- `state.last_result` — JSON result of the most recent execute/select
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('sql.open', JSON.stringify({ path: 'app.db' }));
+await invoke('sql.execute', JSON.stringify({
+  sql: 'CREATE TABLE todos (id INTEGER PRIMARY KEY, title TEXT)'
+}));
+await invoke('sql.execute', JSON.stringify({
+  sql: 'INSERT INTO todos (title) VALUES (?)',
+  params: ['buy milk']
+}));
+await invoke('sql.select', JSON.stringify({ sql: 'SELECT * FROM todos' }));
+```
+
+## Notes
+
+- Requires the build flag `-Dsqlite=true`. Without it the plugin compiles to a stub and database commands return `error.SqliteNotEnabled`.
+- `sql.execute` accepts optional `params` for positional parameter binding.
+- `sql.select` returns an array of row objects with column names as keys.
+- The `custom/sql` capability kind allows `registry.hasCapability(.custom)` queries to succeed.
+
+## Lifecycle
+
+```zig
+const module = try plugin_sql.create(allocator);
+try registry.startAll(runtime);
+// ... dispatch sql.* commands ...
+try registry.stopAll(runtime);
+```
+
+`stop` closes any open database handle, frees `state.last_result`, and destroys the owned `SqlState`. See [Extensions](/extensions) for the module lifecycle.

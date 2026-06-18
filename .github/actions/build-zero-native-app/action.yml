@@ -1,0 +1,74 @@
+name: Build zero-native app
+description: Sets up Zig and builds a zero-native desktop app from a provided app path.
+
+inputs:
+  app-path:
+    description: Path to the app directory containing build.zig and app.zon
+    required: true
+
+  target:
+    description: |
+      Zig target triple (e.g. aarch64-macos, x86_64-linux-musl).
+      Defaults to the host target.
+    required: false
+    default: ""
+
+  web-engine:
+    description: Web engine override (system or chromium)
+    required: false
+    default: ""
+
+  optimize:
+    description: Compilation optimization mode (Debug, ReleaseSafe, ReleaseFast, ReleaseSmall)
+    required: false
+    default: ReleaseSmall
+
+  cef-dir:
+    description: Path to the CEF runtime directory for Chromium builds
+    required: false
+    default: ""
+
+outputs:
+  binary-path:
+    description: Absolute path to the built binary
+    value: ${{ steps.build.outputs.binary-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: 0.17.0-dev.813+2153f8143
+        cache: true
+
+    - name: Resolve build flags
+      id: flags
+      shell: bash
+      run: |
+        FLAGS=""
+        if [ -n "${{ inputs.target }}" ]; then
+          FLAGS="$FLAGS -Dtarget=${{ inputs.target }}"
+        fi
+        if [ -n "${{ inputs.optimize }}" ]; then
+          FLAGS="$FLAGS -Doptimize=${{ inputs.optimize }}"
+        fi
+        if [ -n "${{ inputs.web-engine }}" ]; then
+          FLAGS="$FLAGS -Dweb-engine=${{ inputs.web-engine }}"
+        fi
+        if [ -n "${{ inputs.cef-dir }}" ]; then
+          FLAGS="$FLAGS -Dcef-dir=${{ inputs.cef-dir }}"
+        fi
+        echo "flags=$FLAGS" >> "$GITHUB_OUTPUT"
+
+    - name: Build app
+      id: build
+      shell: bash
+      run: |
+        cd "${{ inputs.app-path }}"
+        zig build ${{ steps.flags.outputs.flags }}
+        case "${{ matrix.os }}" in
+          windows*) BIN="${{ inputs.app-path }}/zig-out/bin/${{ inputs.app-path }}.exe" ;;
+          *)        BIN="${{ inputs.app-path }}/zig-out/bin/${{ inputs.app-path }}" ;;
+        esac
+        echo "binary-path=$BIN" >> "$GITHUB_OUTPUT"

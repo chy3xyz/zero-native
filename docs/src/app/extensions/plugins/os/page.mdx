@@ -1,0 +1,37 @@
+# Plugin: OS
+
+Exposes host operating-system metadata to the frontend.
+
+## Commands
+
+| Command | Payload | Description |
+|---------|---------|-------------|
+| `os.info` | ignored | Populates `state.last_info` with JSON `{"arch","os","os_version","hostname","locale"}` |
+
+## State
+
+- `state.last_info` — JSON string returned by the most recent `os.info`
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('os.info');
+```
+
+## Notes
+
+- Values are read at command time using `std.process`, `std.posix`, and `std.mem` helpers.
+- In tests the JSON shape is asserted rather than exact values, because host metadata varies.
+- The `custom/os` capability kind allows `registry.hasCapability(.custom)` queries to succeed.
+
+## Lifecycle
+
+```zig
+const module = try plugin_os.create(allocator);
+try registry.startAll(runtime);
+// ... dispatch os.info commands ...
+try registry.stopAll(runtime);
+```
+
+`stop` frees `state.last_info` and destroys the owned `OsState`. See [Extensions](/extensions) for the module lifecycle.

@@ -1,0 +1,40 @@
+# Plugin: Process
+
+Controls the zero-native process lifecycle from the frontend.
+
+## Commands
+
+| Command | Payload | Description |
+|---------|---------|-------------|
+| `process.exit` | decimal exit code | Records `state.last_exit_code`; the runtime exits when it drains the command queue |
+| `process.relaunch` | ignored | Records `state.relaunch_requested`; the runtime restarts on shutdown |
+
+## State
+
+- `state.last_exit_code` — last requested exit code
+- `state.relaunch_requested` — `true` if a relaunch was requested
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('process.exit', '0');
+await invoke('process.relaunch');
+```
+
+## Notes
+
+- Actual `std.process.exit` is invoked by the runtime after the plugin records the request.
+- In tests, only the state recording is asserted; no process is terminated.
+- The `custom/process` capability kind allows `registry.hasCapability(.custom)` queries to succeed.
+
+## Lifecycle
+
+```zig
+const module = try plugin_process.create(allocator);
+try registry.startAll(runtime);
+// ... dispatch process.* commands ...
+try registry.stopAll(runtime);
+```
+
+`stop` destroys the owned `ProcessState`. See [Extensions](/extensions) for the module lifecycle.

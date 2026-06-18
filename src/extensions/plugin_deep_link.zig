@@ -35,17 +35,28 @@ pub const cmd_last_url: []const u8 = "deep_link.last_url";
 
 /// Mutable state owned by a deep link module instance.
 pub const DeepLinkState = struct {
+    schemes: std.ArrayList([]const u8),
     scheme: ?[]u8,
     last_url: ?[]u8,
     allocator: std.mem.Allocator,
 };
 
 /// Allocate the plugin state and return a `Module` view.
-pub fn create(allocator: std.mem.Allocator) !extensions.Module {
+/// `schemes` are the URL schemes declared in `app.zon` under
+/// `.deep_link_schemes`. Pass `&.{}` for apps without deep-link config.
+pub fn create(allocator: std.mem.Allocator, schemes: []const []const u8) !extensions.Module {
     const state = try allocator.create(DeepLinkState);
     errdefer allocator.destroy(state);
+
+    var owned_schemes = std.ArrayList([]const u8).empty;
+    errdefer owned_schemes.deinit(allocator);
+    for (schemes) |s| {
+        try owned_schemes.append(allocator, try allocator.dupe(u8, s));
+    }
+
     state.* = .{
-        .scheme = null,
+        .schemes = owned_schemes,
+        .scheme = if (schemes.len > 0) try allocator.dupe(u8, schemes[0]) else null,
         .last_url = null,
         .allocator = allocator,
     };
@@ -82,6 +93,8 @@ pub fn start(context: *anyopaque, runtime: extensions.RuntimeContext) anyerror!v
 /// Stop hook — frees the recorded scheme/url strings and destroys the state.
 pub fn stop(context: *anyopaque, _: extensions.RuntimeContext) anyerror!void {
     const state: *DeepLinkState = @ptrCast(@alignCast(context));
+    for (state.schemes.items) |s| state.allocator.free(s);
+    state.schemes.deinit(state.allocator);
     if (state.scheme) |scheme| state.allocator.free(scheme);
     if (state.last_url) |url| state.allocator.free(url);
     state.allocator.destroy(state);
@@ -121,7 +134,7 @@ const test_runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
 test "deep_link: register records the scheme" {
     const allocator = std.testing.allocator;
-    const module = try create(allocator);
+    const module = try create(allocator, &.{});
 
     try module.hooks.start_fn.?(module.context, test_runtime);
     try module.hooks.command_fn.?(module.context, test_runtime, .{
@@ -138,7 +151,7 @@ test "deep_link: register records the scheme" {
 
 test "deep_link: subsequent register replaces the old scheme" {
     const allocator = std.testing.allocator;
-    const module = try create(allocator);
+    const module = try create(allocator, &.{});
 
     try module.hooks.start_fn.?(module.context, test_runtime);
     try module.hooks.command_fn.?(module.context, test_runtime, .{
@@ -158,7 +171,7 @@ test "deep_link: subsequent register replaces the old scheme" {
 
 test "deep_link: start and stop do not crash" {
     const allocator = std.testing.allocator;
-    const module = try create(allocator);
+    const module = try create(allocator, &.{});
 
     try module.hooks.start_fn.?(module.context, test_runtime);
     try module.hooks.stop_fn.?(module.context, test_runtime);
@@ -166,7 +179,7 @@ test "deep_link: start and stop do not crash" {
 
 test "deep_link: last_url records the payload" {
     const allocator = std.testing.allocator;
-    const module = try create(allocator);
+    const module = try create(allocator, &.{});
 
     try module.hooks.start_fn.?(module.context, test_runtime);
     try module.hooks.command_fn.?(module.context, test_runtime, .{
@@ -183,7 +196,7 @@ test "deep_link: last_url records the payload" {
 
 test "deep_link: last_url replaces previous url" {
     const allocator = std.testing.allocator;
-    const module = try create(allocator);
+    const module = try create(allocator, &.{});
 
     try module.hooks.start_fn.?(module.context, test_runtime);
     try module.hooks.command_fn.?(module.context, test_runtime, .{
@@ -203,7 +216,7 @@ test "deep_link: last_url replaces previous url" {
 
 test "deep_link: registers in a ModuleRegistry" {
     const allocator = std.testing.allocator;
-    var module = try create(allocator);
+    var module = try create(allocator, &.{});
 
     const modules = [_]extensions.Module{module};
     const registry = extensions.ModuleRegistry{ .modules = &modules };

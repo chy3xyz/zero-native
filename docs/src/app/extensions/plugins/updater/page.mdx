@@ -1,45 +1,57 @@
 # Plugin: Updater
 
-Auto-updater plugin. Parses update manifests, compares versions, and reports whether an update is available. `download` and `install` are stubs pending a real HTTP update server.
+Auto-updater plugin. Parses update manifests, compares versions, downloads platform-specific archives, and triggers platform installers. When configured with a `manifest_url`, `updater.check` can fetch the manifest directly; otherwise the caller passes raw manifest JSON as the payload.
 
 ## Commands
 
 | Command | Payload format | Description |
 |---------|----------------|-------------|
-| `updater.check` | raw manifest JSON | Parses the manifest, compares `manifest.version` to `state.current_version`, sets `state.update_available` |
-| `updater.download` | platform key (e.g. `"macos-aarch64"`) | Stub; sets `state.downloaded = false` and `state.archive_path = null` |
-| `updater.install` | none | Stub; sets `state.installed = false` and `state.staging_path = null` |
+| `updater.check` | raw manifest JSON, or empty | Parses the manifest, compares `manifest.version` to `state.current_version`, sets `state.update_available`. Empty payload fetches from `state.manifest_url`. |
+| `updater.download` | platform key (e.g. `"macos-aarch64"`) | Downloads the archive for the given platform entry and verifies its Ed25519 signature when a public key is configured |
+| `updater.install` | archive path | Runs the platform installer (`open` on macOS, `dpkg -i` for `.deb` / executable AppImages on Linux, `msiexec /i` for `.msi` / direct launch for `.exe` on Windows) |
 
 ## State
 
 - `state.current_version` — the running app's version (passed to `create`)
-- `state.manifest_url` — URL the manifest would be fetched from in production
+- `state.manifest_url` — URL the manifest is fetched from when `updater.check` is called with an empty payload
 - `state.public_key` — optional 32-byte Ed25519 public key (decoded from base64) for signature verification
+- `state.check_on_start` — when `true`, the plugin fetches the manifest during `start`
 - `state.update_available` — `true` when the parsed manifest version is greater than the current version
 - `state.manifest` — the most recently parsed `update_manifest.Manifest`
-- `state.downloaded` / `state.installed` — flags left `false` until the stubs are wired up
+- `state.downloaded` / `state.archive_path` — set after a successful `updater.download`
+- `state.installed` / `state.staging_path` — set after a successful `updater.install`
 
 ## JS example
 
 ```javascript
 import { invoke } from 'zero-native';
+
+// Fetch and compare the configured feed.
+await invoke('updater.check');
+
+// Or pass a manifest directly (useful for tests or side-loaded updates).
 const manifestJson = '{"version":"1.0.0","notes":"major","platforms":{}}';
 await invoke('updater.check', manifestJson);
-const result = await invoke('updater.download', 'macos-aarch64');
+
+// Download the archive for this platform.
+await invoke('updater.download', 'macos-aarch64');
+
+// Install it.
+await invoke('updater.install', '/path/to/update.bin');
 ```
 
 ## Notes
 
-- `create(allocator, io, current_version, manifest_url, public_key_b64)` accepts an empty `public_key_b64` to skip signature verification.
-- Production use requires wiring `http_client.request` into `updater.check` to fetch the manifest from `state.manifest_url`.
+- `create(allocator, io, current_version, manifest_url, public_key_b64, check_on_start)` accepts an empty `public_key_b64` to skip signature verification and `check_on_start = false` to disable the startup fetch.
+- Empty-payload `updater.check` chooses HTTP or HTTPS automatically based on the URL scheme.
 - The capability is registered as `Capability{ .kind = .custom, .name = "updater" }`.
 - Version comparison is performed with `update_manifest.compareVersion`; a manifest at the same version reports `update_available = false` (no upgrade prompt).
-- Signature verification is currently a stub; provide a base64-encoded Ed25519 public key to opt in.
+- Provide a base64-encoded Ed25519 public key to verify archive signatures before installation.
 
 ## Lifecycle
 
 ```zig
-const module = try plugin_updater.create(allocator, io, "1.0.0", "https://example.com/manifest.json", "");
+const module = try plugin_updater.create(allocator, io, "1.0.0", "https://example.com/manifest.json", "", false);
 try registry.startAll(runtime);
 // ... dispatch updater.check, .download, .install ...
 try registry.stopAll(runtime);

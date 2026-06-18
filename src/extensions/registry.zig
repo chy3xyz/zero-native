@@ -17,6 +17,7 @@
 //! - "os"
 //! - "log"
 //! - "cli"
+//! - "sql"
 //!
 //! Unknown names return `error.UnknownPlugin` so typos in `app.zon` are
 //! caught at load time.
@@ -37,6 +38,15 @@ const plugin_os = @import("plugin_os.zig");
 const plugin_process = @import("plugin_process.zig");
 const plugin_shell = @import("plugin_shell.zig");
 const plugin_single_instance = @import("plugin_single_instance.zig");
+const plugin_sql = @import("plugin_sql.zig");
+const plugin_path = @import("plugin_path.zig");
+const plugin_fs = @import("plugin_fs.zig");
+const plugin_dialog = @import("plugin_dialog.zig");
+const plugin_env = @import("plugin_env.zig");
+const plugin_random = @import("plugin_random.zig");
+const plugin_crypto = @import("plugin_crypto.zig");
+const plugin_window = @import("plugin_window.zig");
+const plugin_tray = @import("plugin_tray.zig");
 const plugin_store = @import("plugin_store.zig");
 const plugin_updater = @import("plugin_updater.zig");
 const plugin_websocket = @import("plugin_websocket.zig");
@@ -65,6 +75,16 @@ pub const Options = struct {
     /// Base64 Ed25519 public key for signature verification. Empty
     /// disables verification.
     public_key_b64: []const u8 = "",
+    /// Whether the updater plugin should check for updates on startup.
+    /// Defaults to the value from `metadata.updates.check_on_start`.
+    check_on_start: bool = false,
+    /// URL schemes for the deep-link plugin. Defaults to the list from
+    /// `metadata.deep_link_schemes`. Each entry is a bare scheme name
+    /// (e.g. "myapp").
+    deep_link_schemes: []const []const u8 = &.{},
+    /// Out-of-tree plugins that can be referenced by name from
+    /// `metadata.plugins` alongside the built-in plugins.
+    custom_plugins: []const extensions.Plugin = &.{},
 };
 
 /// Instantiate every plugin named in `metadata.plugins` and return them as
@@ -94,13 +114,20 @@ pub fn loadFromManifestWithOptions(
 
     const app_name = options.app_name orelse metadata.id;
     const current_version = options.current_version orelse metadata.version;
+    const manifest_url = if (options.manifest_url.len > 0) options.manifest_url else metadata.updates.feed_url;
+    const public_key_b64 = if (options.public_key_b64.len > 0) options.public_key_b64 else metadata.updates.public_key;
+    const check_on_start = options.check_on_start or metadata.updates.check_on_start;
+    const deep_link_schemes = if (options.deep_link_schemes.len > 0) options.deep_link_schemes else metadata.deep_link_schemes;
 
     for (metadata.plugins, 0..) |name, index| {
         modules[index] = try createPlugin(allocator, options.io, name, .{
             .app_name = app_name,
             .current_version = current_version,
-            .manifest_url = options.manifest_url,
-            .public_key_b64 = options.public_key_b64,
+            .manifest_url = manifest_url,
+            .public_key_b64 = public_key_b64,
+            .check_on_start = check_on_start,
+            .deep_link_schemes = deep_link_schemes,
+            .custom_plugins = options.custom_plugins,
         });
         populated = index + 1;
     }
@@ -137,6 +164,9 @@ const PluginConfig = struct {
     current_version: []const u8,
     manifest_url: []const u8,
     public_key_b64: []const u8,
+    check_on_start: bool,
+    deep_link_schemes: []const []const u8 = &.{},
+    custom_plugins: []const extensions.Plugin = &.{},
 };
 
 /// Single dispatch point so `loadFromManifestWithOptions` can stay linear
@@ -158,15 +188,15 @@ fn createPlugin(
     } else if (std.mem.eql(u8, name, "http")) {
         return plugin_http.create(allocator, io);
     } else if (std.mem.eql(u8, name, "deep-link")) {
-        return plugin_deep_link.create(allocator);
+        return plugin_deep_link.create(allocator, config.deep_link_schemes);
     } else if (std.mem.eql(u8, name, "store")) {
-        return plugin_store.create(allocator);
+        return plugin_store.create(allocator, io, "");
     } else if (std.mem.eql(u8, name, "autostart")) {
         return plugin_autostart.create(allocator, io, config.app_name, null);
     } else if (std.mem.eql(u8, name, "single-instance")) {
         return plugin_single_instance.create(allocator, io);
     } else if (std.mem.eql(u8, name, "updater")) {
-        return plugin_updater.create(allocator, io, config.current_version, config.manifest_url, config.public_key_b64);
+        return plugin_updater.create(allocator, io, config.current_version, config.manifest_url, config.public_key_b64, config.check_on_start);
     } else if (std.mem.eql(u8, name, "global-shortcut")) {
         return plugin_global_shortcut.create(allocator, io);
     } else if (std.mem.eql(u8, name, "websocket")) {
@@ -179,6 +209,29 @@ fn createPlugin(
         return plugin_log.create(allocator);
     } else if (std.mem.eql(u8, name, "cli")) {
         return plugin_cli.create(allocator);
+    } else if (std.mem.eql(u8, name, "sql")) {
+        return plugin_sql.create(allocator);
+    } else if (std.mem.eql(u8, name, "path")) {
+        return plugin_path.create(allocator, config.app_name);
+    } else if (std.mem.eql(u8, name, "fs")) {
+        return plugin_fs.create(allocator, io);
+    } else if (std.mem.eql(u8, name, "dialog")) {
+        return plugin_dialog.create(allocator);
+    } else if (std.mem.eql(u8, name, "env")) {
+        return plugin_env.create(allocator);
+    } else if (std.mem.eql(u8, name, "random")) {
+        return plugin_random.create(allocator);
+    } else if (std.mem.eql(u8, name, "crypto")) {
+        return plugin_crypto.create(allocator);
+    } else if (std.mem.eql(u8, name, "window")) {
+        return plugin_window.create(allocator);
+    } else if (std.mem.eql(u8, name, "tray")) {
+        return plugin_tray.create(allocator);
+    }
+    for (config.custom_plugins) |plugin| {
+        if (std.mem.eql(u8, name, plugin.name)) {
+            return plugin.create_fn(allocator);
+        }
     }
     return error.UnknownPlugin;
 }
@@ -224,7 +277,7 @@ fn makeMetadata(allocator: std.mem.Allocator, names: []const []const u8) !toolin
     };
 }
 
-test "registry loads all 11 plugins successfully" {
+test "registry loads all bundled plugins successfully" {
     const allocator = std.testing.allocator;
     const all_names = [_][]const u8{
         "clipboard",
@@ -238,6 +291,19 @@ test "registry loads all 11 plugins successfully" {
         "updater",
         "global-shortcut",
         "websocket",
+        "process",
+        "os",
+        "log",
+        "cli",
+        "sql",
+        "path",
+        "fs",
+        "dialog",
+        "env",
+        "random",
+        "crypto",
+        "window",
+        "tray",
     };
 
     const metadata = try makeMetadata(allocator, &all_names);
@@ -303,6 +369,19 @@ test "registry produces modules with unique non-zero ids" {
         "updater",
         "global-shortcut",
         "websocket",
+        "process",
+        "os",
+        "log",
+        "cli",
+        "sql",
+        "path",
+        "fs",
+        "dialog",
+        "env",
+        "random",
+        "crypto",
+        "window",
+        "tray",
     };
 
     const metadata = try makeMetadata(allocator, &all_names);
@@ -323,4 +402,81 @@ test "registry deinitRegistry is a no-op for an empty slice" {
     const allocator = std.testing.allocator;
     // Should not crash, leak, or fail.
     deinitRegistry(allocator, &.{});
+}
+
+const CustomRegistryPlugin = struct {
+    const module_id: extensions.ModuleId = 999;
+
+    fn create(allocator: std.mem.Allocator) !extensions.Module {
+        const state = try allocator.create(u32);
+        errdefer allocator.destroy(state);
+        state.* = 42;
+        return .{
+            .info = .{
+                .id = module_id,
+                .name = "custom-registry-plugin",
+                .capabilities = &.{.{ .kind = .custom, .name = "custom" }},
+            },
+            .context = @ptrCast(state),
+            .hooks = .{
+                .stop_fn = stop,
+            },
+        };
+    }
+
+    fn stop(context: *anyopaque, _: extensions.RuntimeContext) anyerror!void {
+        const state: *u32 = @ptrCast(@alignCast(context));
+        std.testing.allocator.destroy(state);
+    }
+};
+
+test "registry wires updater config from metadata updates block" {
+    const allocator = std.testing.allocator;
+    const names = [_][]const u8{"updater"};
+
+    var metadata = try makeMetadata(allocator, &names);
+    defer metadata.deinit(allocator);
+
+    // Override the empty defaults with real updater values.
+    allocator.free(metadata.updates.feed_url);
+    allocator.free(metadata.updates.public_key);
+    metadata.updates.feed_url = try allocator.dupe(u8, "https://example.com/feed.json");
+    metadata.updates.public_key = try allocator.dupe(u8, "");
+    metadata.updates.check_on_start = true;
+
+    const modules = try loadFromManifest(allocator, metadata);
+    defer deinitRegistry(allocator, modules);
+
+    try std.testing.expectEqual(@as(usize, 1), modules.len);
+    try std.testing.expectEqualStrings("updater", modules[0].info.name);
+
+    const updater_mod = @import("plugin_updater.zig");
+    const state: *updater_mod.UpdaterState = @ptrCast(@alignCast(modules[0].context));
+    try std.testing.expectEqualStrings("https://example.com/feed.json", state.manifest_url);
+    try std.testing.expect(state.public_key == null);
+    try std.testing.expect(state.check_on_start);
+}
+
+test "registry loads custom plugins from Options" {
+    const allocator = std.testing.allocator;
+    const names = [_][]const u8{"custom-registry-plugin"};
+
+    const metadata = try makeMetadata(allocator, &names);
+    defer metadata.deinit(allocator);
+
+    const custom_plugins = [_]extensions.Plugin{
+        .{
+            .name = "custom-registry-plugin",
+            .create_fn = CustomRegistryPlugin.create,
+        },
+    };
+
+    const modules = try loadFromManifestWithOptions(allocator, metadata, .{
+        .custom_plugins = &custom_plugins,
+    });
+    defer deinitRegistry(allocator, modules);
+
+    try std.testing.expectEqual(@as(usize, 1), modules.len);
+    try std.testing.expectEqual(CustomRegistryPlugin.module_id, modules[0].info.id);
+    try std.testing.expectEqualStrings("custom-registry-plugin", modules[0].info.name);
 }

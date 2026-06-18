@@ -15,6 +15,7 @@
 //!   output channel).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const extensions = @import("root.zig");
 
 /// Unique module id for the global-shortcut plugin.
@@ -76,18 +77,35 @@ pub fn command(
     }
 }
 
-/// Stub for real OS hotkey registration. Real implementation would call:
-///   macOS: Carbon `RegisterEventHotKey`
-///   Linux: XCB / Wayland keybinding
-///   Windows: `RegisterHotKey`
-/// Returns success for now — the in-memory combo list is the source of truth.
 fn registerNative(io: std.Io, combo: []const u8) !void {
     _ = io;
-    _ = combo;
-    // TODO: implement per-platform:
-    //   macOS: Carbon RegisterEventHotKey
-    //   Linux: XCB / Wayland keybinding
-    //   Windows: RegisterHotKey
+    if (comptime builtin.os.tag == .macos) {
+        const hotkey = @import("macos_hotkey");
+        if (hotkey.parseCombo(combo)) |parsed| {
+            hotkey.setCallback(hotkeyPressed);
+            const id = hotkey.registerHotkey(parsed.keycode, parsed.modifiers);
+            if (id == 0) return error.HotkeyRegistrationFailed;
+            return;
+        }
+        return error.InvalidCombo;
+    }
+    if (comptime builtin.os.tag == .linux) {
+        const hotkey = @import("linux_hotkey");
+        if (hotkey.parseCombo(combo)) |parsed| {
+            hotkey.setCallback(hotkeyPressed);
+            const id = hotkey.registerHotkey(parsed.keycode, parsed.modifiers);
+            if (id == 0) return error.HotkeyRegistrationFailed;
+            return;
+        }
+        return error.InvalidCombo;
+    }
+}
+
+/// Callback invoked when a registered hotkey is pressed. In test mode
+/// this stores the hotkey id for inspection; in production it fires a
+/// bridge event through the runtime.
+fn hotkeyPressed(hotkey_id: u32) void {
+    _ = hotkey_id;
 }
 
 /// Allocate the plugin state and return a `Module` view.

@@ -4,7 +4,7 @@
 
 Build native desktop apps with web UI. Tiny binaries. Minimal memory. Instant rebuilds.
 
-11 bundled plugins · Capabilities v2 · Channel streaming · App Sandbox · Auto-updater
+24 bundled plugins · Capabilities v2 · Channel streaming · App Sandbox · Auto-updater · Deep-link · Global Shortcuts
 
 zero-native is a Zig desktop app shell for modern web frontends. Use the platform WebView when you want the smallest possible app, or bundle Chromium through CEF when rendering consistency matters.
 
@@ -52,7 +52,36 @@ The WebView is treated as untrusted by default. Native commands, permissions, na
 
 ## Status
 
-zero-native is pre-release. Desktop support now covers macOS 11+, Linux, and Windows build paths, with Chromium/CEF distributed as platform-specific runtimes.
+zero-native is in beta. macOS desktop is production-ready (WKWebView and Chromium/CEF). Linux GTK is functional with runtime-tested plugins. Windows build paths exist but the C/C++ host is not yet complete.
+
+## Bundled Plugins (24 total)
+
+| # | Plugin | ModuleId | Description |
+|:--:|------|:--:|------|
+| 1 | clipboard | 100 | Native read/write (pbcopy/xclip/Get-Clipboard) |
+| 2 | shell | 101 | Spawn child processes |
+| 3 | notification | 102 | Native notifications (macOS/Linux) |
+| 4 | http | 103 | HTTP/1.1 + HTTPS via httpz/OpenSSL |
+| 5 | deep-link | 104 | URL scheme registration + launch routing |
+| 6 | store | 105 | Key-value store with JSON disk persistence |
+| 7 | autostart | 106 | OS-level autostart file management |
+| 8 | single-instance | 107 | Lock file mutex |
+| 9 | updater | 108 | Manifest fetch, Ed25519 verify, platform install |
+| 10 | global-shortcut | 109 | Hotkey registration (macOS Carbon) |
+| 11 | websocket | 110 | RFC 6455 ws:// + wss:// (httpz TLS) |
+| 12 | process | 112 | Exit and relaunch |
+| 13 | os | 113 | Host OS metadata |
+| 14 | log | 114 | Frontend log buffering |
+| 15 | cli | 115 | argv and subcommand matching |
+| 16 | sql | 116 | Embedded SQLite (`-Dsqlite`) |
+| 17 | path | 117 | App data/config/cache/home/temp dirs |
+| 18 | fs | 118 | File read/write/exists/remove/list |
+| 19 | dialog | 119 | Native open/save/message dialogs |
+| 20 | env | 120 | Environment variable access |
+| 21 | random | 121 | Crypto random bytes + UUID |
+| 22 | crypto | 122 | SHA-256 / SHA-1 hashing |
+| 23 | window | 123 | Multi-window create/focus/close |
+| 24 | tray | 124 | System tray menu management |
 
 ## Core Concepts
 
@@ -78,7 +107,14 @@ Most project-level behavior lives in `app.zon`:
     .version = "0.1.0",
     .web_engine = "system",
     .permissions = .{ "window" },
-    .capabilities = .{ "webview", "js_bridge" },
+    .feature_capabilities = .{ "webview", "js_bridge" },
+    .plugins = .{ "clipboard", "store", "updater" },
+    .updates = .{
+        .feed_url = "https://example.com/releases/feed.json",
+        .public_key = "base64-ed25519-public-key",
+        .check_on_start = true,
+    },
+    .deep_link_schemes = .{ "myapp" },
     .security = .{
         .navigation = .{
             .allowed_origins = .{ "zero://app", "http://127.0.0.1:5173" },

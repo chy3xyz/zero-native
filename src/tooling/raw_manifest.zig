@@ -19,6 +19,13 @@ pub const RawManifest = struct {
     frontend: ?RawFrontend = null,
     security: RawSecurity = .{},
     windows: []const RawWindow = &.{},
+    /// Update feed configuration. When `feed_url` is set and the `updater`
+    /// plugin is enabled, the runtime can fetch signed manifests automatically.
+    updates: RawUpdates = .{},
+    /// Custom URL schemes registered by the deep-link plugin. Each entry is
+    /// a scheme name (e.g. "myapp") that macOS, Linux, and Windows will use
+    /// to route URL invocations to the packaged app.
+    deep_link_schemes: []const []const u8 = &.{},
     /// Plugin module names enabled for this app (e.g. "clipboard", "shell").
     /// The list is consumed by `extensions.registry.loadFromManifest` to
     /// instantiate matching `extensions.Module` values at startup. Unknown
@@ -28,6 +35,12 @@ pub const RawManifest = struct {
     /// a named capability, the windows it targets, and the granular
     /// permissions it grants with allow/deny scope globs.
     capabilities: []const RawSecurityCapability = &.{},
+};
+
+pub const RawUpdates = struct {
+    feed_url: []const u8 = "",
+    public_key: []const u8 = "",
+    check_on_start: bool = false,
 };
 
 pub const RawCef = struct {

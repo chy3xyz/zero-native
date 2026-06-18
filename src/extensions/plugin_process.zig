@@ -8,6 +8,7 @@
 //! - `process.relaunch` — payload is ignored. Records `state.relaunch_requested = true`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const extensions = @import("root.zig");
 
 pub const ModuleId: extensions.ModuleId = 112;
@@ -42,6 +43,7 @@ pub fn command(
     if (std.mem.eql(u8, cmd.name, cmd_exit)) {
         const code = std.fmt.parseInt(i32, cmd.payload, 10) catch 0;
         state.last_exit_code = code;
+        if (comptime !builtin.is_test) std.process.exit(@intCast(code));
     } else if (std.mem.eql(u8, cmd.name, cmd_relaunch)) {
         state.relaunch_requested = true;
     }

@@ -47,6 +47,7 @@ pub fn build(b: *std.Build) void {
     const cef_dir_override = b.option([]const u8, "cef-dir", "Override CEF root directory for Chromium builds");
     const cef_auto_install_override = b.option(bool, "cef-auto-install", "Override app.zon CEF auto-install setting");
     _ = b.option(bool, "js-bridge", "Enable optional JavaScript bridge stubs") orelse false;
+    const sqlite_enabled = b.option(bool, "sqlite", "Enable SQLite plugin (requires libsqlite3)") orelse false;
     const package_target = b.option(PackageTarget, "package-target", "Package target: macos, windows, linux, ios, android") orelse .macos;
     const signing_mode = b.option(SigningMode, "signing", "Signing mode: none, adhoc, identity") orelse .none;
     const package_version = packageVersion(b);
@@ -149,6 +150,18 @@ pub fn build(b: *std.Build) void {
     security_mod.addImport("sandbox", sandbox_mod);
     const csp_tests = testArtifact(b, csp_mod);
     const sandbox_tests = testArtifact(b, sandbox_mod);
+    const macos_hotkey_mod = module(b, target, optimize, "src/platform/macos/hotkey.zig");
+    if (target.result.os.tag == .macos) {
+        macos_hotkey_mod.linkFramework("Carbon", .{});
+    }
+    const linux_hotkey_mod = module(b, target, optimize, "src/platform/linux/hotkey.zig");
+
+    const platform_mod = module(b, target, optimize, "src/platform/root.zig");
+    platform_mod.addImport("geometry", geometry_mod);
+    platform_mod.addImport("platform_info", platform_info_mod);
+    platform_mod.addImport("security", security_mod);
+    desktop_mod.addImport("security", security_mod);
+    desktop_mod.addImport("platform", platform_mod);
     const tooling_mod = module(b, target, optimize, "src/tooling/root.zig");
     tooling_mod.addImport("assets", assets_mod);
     tooling_mod.addImport("app_dirs", app_dirs_mod);
@@ -162,10 +175,19 @@ pub fn build(b: *std.Build) void {
     tooling_mod.addImport("bridge_codegen", codegen_mod);
     const tooling_tests = testArtifact(b, tooling_mod);
 
+    const sqlite_options = b.addOptions();
+    sqlite_options.addOption(bool, "enabled", sqlite_enabled);
+    const sqlite_options_mod = sqlite_options.createModule();
+
     const extensions_mod = module(b, target, optimize, "src/extensions/all.zig");
     extensions_mod.addImport("update_manifest", update_manifest_mod);
     extensions_mod.addImport("httpz", httpz_mod);
     extensions_mod.addImport("tooling", tooling_mod);
+    extensions_mod.addImport("platform", platform_mod);
+    extensions_mod.addImport("sqlite_options", sqlite_options_mod);
+    extensions_mod.addImport("macos_hotkey", macos_hotkey_mod);
+    extensions_mod.addImport("linux_hotkey", linux_hotkey_mod);
+    extensions_mod.addImport("app_dirs", app_dirs_mod);
     const extensions_tests = testArtifact(b, extensions_mod);
 
     const cli_mod = module(b, target, optimize, "tools/zero-native/main.zig");
@@ -175,6 +197,9 @@ pub fn build(b: *std.Build) void {
         .name = "zero-native",
         .root_module = cli_mod,
     });
+    if (sqlite_enabled) {
+        extensions_tests.root_module.linkSystemLibrary("sqlite3", .{});
+    }
     b.installArtifact(cli_exe);
 
     const platform_arg = switch (selected_platform) {

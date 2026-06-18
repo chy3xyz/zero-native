@@ -1,0 +1,39 @@
+# Plugin: Log
+
+Records log messages emitted by the frontend.
+
+## Commands
+
+| Command | Payload | Description |
+|---------|---------|-------------|
+| `log.write` | `level\|message` | Appends `{level, message}` to `state.entries`. `level` is `trace`, `debug`, `info`, `warn`, or `error` |
+| `log.clear` | ignored | Clears all buffered entries |
+
+## State
+
+- `state.entries` — array of `{level, message}` structs in insertion order
+
+## JS example
+
+```javascript
+import { invoke } from 'zero-native';
+await invoke('log.write', 'info|hello from frontend');
+await invoke('log.write', 'error|something failed');
+await invoke('log.clear');
+```
+
+## Notes
+
+- The `error` level is stored internally as `LogLevel.err`.
+- The `custom/log` capability kind allows `registry.hasCapability(.custom)` queries to succeed.
+
+## Lifecycle
+
+```zig
+const module = try plugin_log.create(allocator);
+try registry.startAll(runtime);
+// ... dispatch log.* commands ...
+try registry.stopAll(runtime);
+```
+
+`stop` frees every buffered message and destroys the owned `LogState`. See [Extensions](/extensions) for the module lifecycle.

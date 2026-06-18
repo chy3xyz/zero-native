@@ -1,13 +1,23 @@
 # Plugin: Clipboard
 
-In-memory text buffer with command dispatch. Records writes and returns the most recent value on read. Useful as a reference for the basic `clipboard` capability kind and for testing bridge commands that interact with clipboard state.
+Text clipboard with command dispatch. The plugin keeps an in-memory buffer as the authoritative fallback and attempts to sync reads and writes with the host OS native clipboard when platform utilities are available.
 
 ## Commands
 
 | Command | Payload format | Description |
 |---------|----------------|-------------|
-| `clipboard.write_text` | `text` (whole payload) | Writes the payload to the buffer; empty payload falls back to `default_text` (`"hello from test"`) |
-| `clipboard.read_text` | none | Duplicates the current buffer into `state.last_read` for inspection |
+| `clipboard.write_text` | `text` (whole payload) | Writes the payload to the in-memory buffer and tries to push it to the native OS clipboard; empty payload falls back to `default_text` (`"hello from test"`) |
+| `clipboard.read_text` | none | Tries to read from the native OS clipboard; if that fails or returns nothing, duplicates the in-memory buffer into `state.last_read` for inspection |
+
+## Native clipboard behavior
+
+The plugin invokes external platform utilities via `std.process.Child`:
+
+- **macOS**: `pbcopy` for write, `pbpaste` for read.
+- **Linux**: `wl-copy` / `wl-paste` (Wayland) are preferred; `xclip -selection clipboard -in` / `xclip -selection clipboard -out` (X11) are used as a fallback.
+- **Windows**: `clip` for write; `powershell.exe -Command Get-Clipboard` for read.
+
+If the platform utility is missing, the display server is unreachable, or the child exits unsuccessfully, the plugin returns an error and the command hook falls back to the in-memory buffer. The in-memory buffer is therefore always safe to rely on.
 
 ## State
 
@@ -26,10 +36,11 @@ console.log(result);
 
 ## Notes
 
-- This plugin uses an in-memory buffer only. Real OS clipboard integration requires a native bridge to NSPasteboard / Win32 OpenClipboard / GTK clipboard.
+- The in-memory buffer is the source of truth when the native clipboard is unavailable or fails.
 - The capability is registered as `Capability{ .kind = .clipboard }`; queries via `registry.hasCapability(.clipboard)` return `true` once the plugin is installed.
 - Pair with [Builtin Commands](/bridge/builtin-commands) when you need a `window.zero.clipboard.*` helper for the WebView side.
 - The `default_text` constant is exported for tests; production callers should always pass a non-empty payload.
+- On Windows, `Get-Clipboard` may append a trailing newline to its console output; the plugin trims one trailing newline to preserve round-trip fidelity.
 
 ## Lifecycle
 
@@ -40,6 +51,6 @@ try registry.startAll(runtime);
 try registry.stopAll(runtime);
 ```
 
-`stop` frees the duplicated `text` and `last_read` slices, then destroys the state struct. Leaks will be flagged by `std.testing.allocator` if you use the testing allocator in tests.
+`stop` frees the duplicated `text` and `last_read` slices, tears down the internal threaded IO instance used for spawning clipboard utilities, then destroys the state struct. Leaks will be flagged by `std.testing.allocator` if you use the testing allocator in tests.
 
 See [Extensions](/extensions) for the module lifecycle.

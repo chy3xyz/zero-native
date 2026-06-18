@@ -105,6 +105,7 @@ void zero_native_appkit_create_tray(zero_native_appkit_host_t *host, const char 
 void zero_native_appkit_update_tray_menu(zero_native_appkit_host_t *host, const uint32_t *item_ids, const char *const *labels, const size_t *label_lens, const int *separators, const int *enabled_flags, size_t count);
 void zero_native_appkit_remove_tray(zero_native_appkit_host_t *host);
 void zero_native_appkit_set_tray_callback(zero_native_appkit_host_t *host, zero_native_appkit_tray_callback_t callback, void *context);
+int zero_native_appkit_show_notification(zero_native_appkit_host_t *host, const char *title, size_t title_len, const char *body, size_t body_len);
 
 #ifdef __cplusplus
 }

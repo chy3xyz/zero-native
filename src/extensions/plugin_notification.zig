@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const extensions = @import("root.zig");
+const platform = @import("platform");
 
 pub const ModuleId: extensions.ModuleId = 102;
 
@@ -80,15 +81,14 @@ pub fn stop(context: *anyopaque, runtime: extensions.RuntimeContext) anyerror!vo
 /// - `notification.list` — clears the recorded list (no output channel).
 /// - `notification.clear` — clears the recorded list.
 pub fn command(context: *anyopaque, runtime: extensions.RuntimeContext, cmd: extensions.Command) anyerror!void {
-    _ = runtime;
     const self: *NotificationState = @ptrCast(@alignCast(context));
 
     if (std.mem.eql(u8, cmd.name, cmd_notify)) {
         try appendNotification(self, cmd.payload);
-        // Post the notification to the host OS. The stub succeeds on all
-        // platforms; native wiring (NSUserNotificationCenter on macOS,
-        // libnotify on Linux, Windows toast notifications) is future work.
-        postOsNotification(cmd.payload) catch {};
+        // Post the notification to the host OS when a platform notification
+        // service is available. Errors are swallowed so the in-memory log
+        // remains the authoritative record and tests/headless runs keep working.
+        postOsNotification(runtime, cmd.payload) catch {};
         return;
     }
 
@@ -122,15 +122,20 @@ fn clearNotifications(self: *NotificationState) void {
     self.notifications.clearRetainingCapacity();
 }
 
-/// Post a notification to the host operating system. This is a stub that
-/// succeeds on all platforms; native wiring is future work:
-///
-///   macOS:   NSUserNotificationCenter / UNUserNotificationCenter
-///   Linux:   libnotify (org.freedesktop.Notifications)
-///   Windows: Windows.UI.Notifications (toast)
-fn postOsNotification(payload: []const u8) !void {
-    _ = payload;
-    // TODO: implement per-platform native notification posting.
+/// Post a notification to the host operating system. When the runtime context
+/// includes platform services, delegates to `PlatformServices.showNotification`.
+/// Otherwise returns `error.UnsupportedService` so the caller falls back to the
+/// in-memory log.
+fn postOsNotification(runtime: extensions.RuntimeContext, payload: []const u8) !void {
+    const services_ptr = runtime.services orelse return error.UnsupportedService;
+    const services: *const platform.PlatformServices = @ptrCast(@alignCast(services_ptr));
+    const separator = std.mem.indexOfScalar(u8, payload, '|');
+    const title = if (separator) |index| payload[0..index] else payload;
+    const body = if (separator) |index| payload[index + 1 ..] else "";
+    try services.showNotification(.{
+        .title = title,
+        .body = body,
+    });
 }
 
 /// Allocates a new `NotificationState` and wraps it in a `Module`.

@@ -43,6 +43,7 @@ pub const UpdaterState = struct {
     current_version: []const u8,
     manifest_url: []const u8,
     public_key: ?[32]u8,
+    check_on_start: bool,
     update_available: bool = false,
     manifest: ?update_manifest.Manifest = null,
     downloaded: bool = false,
@@ -55,8 +56,15 @@ pub const UpdaterState = struct {
 // Lifecycle hooks
 // ---------------------------------------------------------------------------
 
-/// No-op startup — all state is set up during `create`.
-pub fn start(_: *anyopaque, _: extensions.RuntimeContext) anyerror!void {}
+/// Startup hook — when `check_on_start` is enabled and a feed URL is
+/// configured, fetch the manifest immediately. Errors are ignored so that
+/// a transient network failure does not prevent the app from launching.
+pub fn start(context: *anyopaque, _: extensions.RuntimeContext) anyerror!void {
+    const state: *UpdaterState = @ptrCast(@alignCast(context));
+    if (state.check_on_start and state.manifest_url.len > 0) {
+        handleCheck(state, "") catch {};
+    }
+}
 
 /// Stop hook — frees manifest data, owned strings, and the state itself.
 pub fn stop(context: *anyopaque, _: extensions.RuntimeContext) anyerror!void {
@@ -105,12 +113,45 @@ fn handleCheck(state: *UpdaterState, payload: []const u8) !void {
     }
     state.manifest = null;
 
-    const manifest = try update_manifest.parseManifest(state.allocator, payload);
+    const manifest_json = if (payload.len > 0)
+        payload
+    else
+        try fetchManifestJson(state);
+    defer if (payload.len == 0) state.allocator.free(manifest_json);
+
+    const manifest = try update_manifest.parseManifest(state.allocator, manifest_json);
     state.manifest = manifest;
 
     const current = try update_manifest.parseVersion(state.current_version);
     const order = update_manifest.compareVersion(manifest.version, current);
     state.update_available = order == .gt;
+}
+
+/// Fetch the update manifest from `state.manifest_url`. Returns an
+/// allocator-owned JSON string that the caller must free.
+fn fetchManifestJson(state: *UpdaterState) ![]u8 {
+    if (state.manifest_url.len == 0) return error.NoManifestUrl;
+
+    const url = http_client.Url.parse(state.manifest_url) orelse return error.InvalidUrl;
+    const response = try requestUrl(state.allocator, state.io, url, 10 * 1024 * 1024);
+    defer state.allocator.free(response.body);
+
+    if (response.status != 200) return error.DownloadFailed;
+    return state.allocator.dupe(u8, response.body);
+}
+
+/// Perform a GET request for `url`, choosing HTTPS or HTTP based on the
+/// scheme. The caller owns `response.body`.
+fn requestUrl(allocator: std.mem.Allocator, io: std.Io, url: http_client.Url, max_response_size: usize) !http_client.Response {
+    const config: http_client.Config = .{
+        .method = .GET,
+        .url = url,
+        .max_response_size = max_response_size,
+    };
+    if (std.mem.eql(u8, url.scheme, "https")) {
+        return try http_client.requestHttps(allocator, io, config);
+    }
+    return try http_client.request(allocator, io, config);
 }
 
 /// Download the bundle for `payload` (the platform key, e.g.
@@ -130,11 +171,7 @@ fn handleDownload(state: *UpdaterState, payload: []const u8) !void {
     state.downloaded = false;
 
     const url = http_client.Url.parse(entry.url) orelse return error.InvalidUrl;
-    const response = try http_client.request(state.allocator, state.io, .{
-        .method = .GET,
-        .url = url,
-        .max_response_size = 256 * 1024 * 1024,
-    });
+    const response = try requestUrl(state.allocator, state.io, url, 256 * 1024 * 1024);
     defer state.allocator.free(response.body);
 
     if (response.status != 200) return error.DownloadFailed;
@@ -289,6 +326,7 @@ pub fn create(
     current_version: []const u8,
     manifest_url: []const u8,
     public_key_b64: []const u8,
+    check_on_start: bool,
 ) !extensions.Module {
     const state = try allocator.create(UpdaterState);
     errdefer allocator.destroy(state);
@@ -304,6 +342,7 @@ pub fn create(
         .current_version = try allocator.dupe(u8, current_version),
         .manifest_url = try allocator.dupe(u8, manifest_url),
         .public_key = pk,
+        .check_on_start = check_on_start,
         .update_available = false,
         .manifest = null,
         .downloaded = false,
@@ -334,7 +373,7 @@ pub fn create(
 test "updater: check detects update available" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "");
+    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "", false);
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
     try module.hooks.start_fn.?(module.context, runtime);
@@ -359,7 +398,7 @@ test "updater: check detects update available" {
 test "updater: check detects same version as no update" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const module = try create(allocator, io, "1.0.0", "http://localhost/manifest.json", "");
+    const module = try create(allocator, io, "1.0.0", "http://localhost/manifest.json", "", false);
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
     try module.hooks.start_fn.?(module.context, runtime);
@@ -381,7 +420,7 @@ test "updater: check detects same version as no update" {
 test "updater: check detects downgrade as no update" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const module = try create(allocator, io, "2.0.0", "http://localhost/manifest.json", "");
+    const module = try create(allocator, io, "2.0.0", "http://localhost/manifest.json", "", false);
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
     try module.hooks.start_fn.?(module.context, runtime);
@@ -403,7 +442,7 @@ test "updater: check detects downgrade as no update" {
 test "updater: start and stop clean up" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "");
+    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "", false);
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
     try module.hooks.start_fn.?(module.context, runtime);
@@ -414,7 +453,7 @@ test "updater: start and stop clean up" {
 test "updater: registry integration" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    var module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "");
+    var module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "", false);
     const modules = [_]extensions.Module{module};
     const registry = extensions.ModuleRegistry{ .modules = &modules };
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
@@ -444,7 +483,7 @@ test "updater: registry integration" {
 test "updater: download without manifest returns NoManifest" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "");
+    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "", false);
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
     try module.hooks.start_fn.?(module.context, runtime);
@@ -461,7 +500,7 @@ test "updater: download without manifest returns NoManifest" {
 test "updater: download with unknown platform returns UnknownPlatform" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "");
+    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "", false);
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
     try module.hooks.start_fn.?(module.context, runtime);
@@ -487,7 +526,7 @@ test "updater: download with unknown platform returns UnknownPlatform" {
 test "updater: install records staging path" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "");
+    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", "", false);
     const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
 
     try module.hooks.start_fn.?(module.context, runtime);
@@ -505,6 +544,35 @@ test "updater: install records staging path" {
     try module.hooks.stop_fn.?(module.context, runtime);
 }
 
+test "updater: check with empty payload and no URL returns NoManifestUrl" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const module = try create(allocator, io, "0.1.0", "", "", false);
+    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+
+    try module.hooks.start_fn.?(module.context, runtime);
+    const result = module.hooks.command_fn.?(module.context, runtime, .{
+        .name = "updater.check",
+    });
+    try std.testing.expectError(error.NoManifestUrl, result);
+    try module.hooks.stop_fn.?(module.context, runtime);
+}
+
+test "updater: check_on_start tolerates unreachable feed" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const module = try create(allocator, io, "0.1.0", "http://127.0.0.1:1/manifest.json", "", true);
+    const runtime: extensions.RuntimeContext = .{ .platform_name = "null" };
+
+    // Startup should not crash even though the feed is unreachable.
+    try module.hooks.start_fn.?(module.context, runtime);
+
+    const state: *UpdaterState = @ptrCast(@alignCast(module.context));
+    try std.testing.expect(!state.update_available);
+
+    try module.hooks.stop_fn.?(module.context, runtime);
+}
+
 test "updater: public key decoding" {
     const kp = std.crypto.sign.Ed25519.KeyPair.generate(std.testing.io);
     var b64_buf: [64]u8 = undefined;
@@ -512,7 +580,7 @@ test "updater: public key decoding" {
 
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", b64);
+    const module = try create(allocator, io, "0.1.0", "http://localhost/manifest.json", b64, false);
     defer {
         const state: *UpdaterState = @ptrCast(@alignCast(module.context));
         deinitState(state);
