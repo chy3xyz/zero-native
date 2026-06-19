@@ -2,6 +2,50 @@
 
 All notable changes to zero-native will be documented in this file.
 
+<!-- release:start -->
+## 0.3.0 — 2026-06-16
+
+### Plugins — 24 bundled (up from 11)
+
+- **8 new plugins**: path (app directories), fs (file I/O), dialog (open/save/message), env (environment variables), random (crypto random + UUID), crypto (SHA-256/SHA-1), window (multi-window), tray (system tray)
+- **Plugin persistence**: store plugin now writes to disk (JSON file) when `store_path` is set, with auto-save on mutation
+- **WebSocket TLS**: `websocket.connect` supports `wss://` via httpz/OpenSSL, real TCP + TLS stream handshake and frame I/O
+- **Global shortcuts**: macOS Carbon `RegisterEventHotKey` bridge (appkit_host.m), Linux X11 keycode parsing (hotkey.zig), all platforms wired through plugin
+- **Updater wiring**: `.updates` block in `app.zon` → Metadata → registry → plugin config; `updater.check` fetches feed via HTTP/HTTPS when payload is empty; `check_on_start` auto-fetches
+- **Plugin real implementations**: process.exit calls `std.process.exit` in production; store disk persistence; clipboard native read/write (pbcopy/xclip/Get-Clipboard); deep-link .deep_link_schemes parsed from app.zon; notification/Linux tray runtime-detected
+- **Third-party plugin SDK**: `extensions.Plugin` type, `extensions.definePlugin`, `Runtime.loadPlugins` accepts `custom_plugins`, loader/registry fallback
+- **SQLite plugin**: `sql.open/execute/select/close` with conditional `-Dsqlite` build flag and comptime stub
+
+### Platform
+
+- **macOS**: native notifications (UNUserNotificationCenter / NSUserNotification), open/save/message dialogs, Carbon global shortcuts, Info.plist CFBundleURLTypes
+- **Linux**: native notifications (dbus-send / notify-send), runtime-detected libayatana-appindicator3 tray, .desktop MIME x-scheme-handler, developer extras + console-to-stdout
+- **Windows**: Pure-Zig platform rewrite — no C++ host required. Win32 user32/kernel32/shell32 extern declarations, window creation (CreateWindowExW), message pump (GetMessageW), 30+ externs declared, compiles on all targets via comptime guards
+
+### DevTools
+
+- macOS WKWebView: developer extras always enabled (right-click → Inspect Element)
+- Linux WebKitGTK: developer extras + console-to-stdout enabled via settings
+- app.zon: `.debug.devtools` flag in metadata
+
+### Infrastructure
+
+- CI matrix: ubuntu/macos/windows all build; macOS runs `zig build test`
+- Reusable `build-zero-native-app` GitHub Action
+- CI Zig version aligned to 0.17.0-dev.813+2153f8143
+- Minimal Zig version bumped to 0.17.0
+- Repository org: vercel-labs → chy3xyz
+
+### Docs
+
+- README: 24-plugin matrix, beta status, updated app.zon example
+- AGENTS.md: AI developer guide (Zig 0.17 gotchas, architecture, plugin checklist)
+- skills/zero-native/SKILL.md: project reference for AI agents
+- 5 new plugin doc pages (process, os, log, cli, sql)
+- field name fix: capabilities → feature_capabilities
+
+<!-- release:end -->
+
 ## Unreleased
 
 ### New Features

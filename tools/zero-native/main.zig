@@ -3,7 +3,7 @@ const automation_cli = @import("automation.zig");
 const skills_cli = @import("skills.zig");
 const tooling = @import("tooling");
 
-const version = "0.2.0";
+const version = "0.3.0";
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
