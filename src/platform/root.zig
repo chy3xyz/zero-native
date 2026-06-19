@@ -50,12 +50,11 @@ pub const WebViewSource = struct {
     kind: WebViewSourceKind,
     bytes: []const u8,
     asset_options: ?WebViewAssetSource = null,
-    /// Optional Content-Security-Policy value. When set on a `.html` source the
-    /// runtime injects a matching `<meta http-equiv="Content-Security-Policy">`
-    /// tag into the document before handing it to the platform backend. For
-    /// `.url` and `.assets` sources the value is logged via
-    /// `security.csp_skipped` because the runtime cannot rewrite the response.
+    /// Optional Content-Security-Policy value.
     csp: ?[]const u8 = null,
+    /// Enable the platform WebView's built-in developer tools (Web
+    /// Inspector / DevTools). Equivalent to Electron's `devTools`.
+    devtools: bool = false,
 
     pub fn html(bytes: []const u8) WebViewSource {
         return .{ .kind = .html, .bytes = bytes };

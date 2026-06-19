@@ -1012,6 +1012,11 @@ int zero_native_gtk_create_webview(zero_native_gtk_host_t *host, uint64_t window
         return 0;
     }
 
+    // Enable Web Inspector / developer extras for dev builds.
+    WebKitSettings *settings = webkit_web_view_get_settings(web_view);
+    webkit_settings_set_enable_developer_extras(settings, TRUE);
+    webkit_settings_set_enable_write_console_messages_to_stdout(settings, TRUE);
+
     zero_native_gtk_webview_t *webview = &win->webviews[win->webview_count++];
     memset(webview, 0, sizeof(*webview));
     webview->label = label_copy;

@@ -26,6 +26,8 @@ pub const RawManifest = struct {
     /// a scheme name (e.g. "myapp") that macOS, Linux, and Windows will use
     /// to route URL invocations to the packaged app.
     deep_link_schemes: []const []const u8 = &.{},
+    /// Debug / development options.
+    debug: RawDebug = .{},
     /// Plugin module names enabled for this app (e.g. "clipboard", "shell").
     /// The list is consumed by `extensions.registry.loadFromManifest` to
     /// instantiate matching `extensions.Module` values at startup. Unknown
@@ -35,6 +37,13 @@ pub const RawManifest = struct {
     /// a named capability, the windows it targets, and the granular
     /// permissions it grants with allow/deny scope globs.
     capabilities: []const RawSecurityCapability = &.{},
+};
+
+pub const RawDebug = struct {
+    /// When true, enables the platform WebView's built-in developer tools
+    /// (Web Inspector / DevTools). Equivalent to Electron's
+    /// `webPreferences.devTools`.
+    devtools: bool = false,
 };
 
 pub const RawUpdates = struct {

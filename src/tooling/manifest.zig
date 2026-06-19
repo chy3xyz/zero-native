@@ -42,6 +42,7 @@ pub const Metadata = struct {
     updates: UpdatesMetadata = .{},
     /// Custom URL schemes for deep-link routing.
     deep_link_schemes: []const []const u8 = &.{},
+    debug: DebugMetadata = .{},
 
     pub fn displayName(self: Metadata) []const u8 {
         return self.display_name orelse self.name;
@@ -107,6 +108,10 @@ pub const Metadata = struct {
         for (self.deep_link_schemes) |value| allocator.free(value);
         if (self.deep_link_schemes.len > 0) allocator.free(self.deep_link_schemes);
     }
+};
+
+pub const DebugMetadata = struct {
+    devtools: bool = false,
 };
 
 pub const UpdatesMetadata = struct {
@@ -283,6 +288,7 @@ pub fn parseText(allocator: std.mem.Allocator, source: []const u8) !Metadata {
         .check_on_start = raw.updates.check_on_start,
     };
     metadata.deep_link_schemes = try duplicateStringList(allocator, raw.deep_link_schemes);
+    metadata.debug = .{ .devtools = raw.debug.devtools };
     metadata.frontend = try convertRawFrontend(allocator, raw.frontend);
     const action = try allocator.dupe(u8, raw.security.navigation.external_links.action);
     errdefer allocator.free(action);
