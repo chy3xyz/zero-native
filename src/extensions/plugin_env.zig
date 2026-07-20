@@ -18,11 +18,11 @@ pub fn command(ctx: *anyopaque, _: extensions.RuntimeContext, cmd: extensions.Co
     if (std.mem.eql(u8, cmd.name, "env.get")) {
         if (cmd.payload.len == 0) return;
         s.key = s.allocator.dupe(u8, cmd.payload) catch return;
-        // TODO: resolve via std.c.getenv or std.os.environ when libc is linked
     }
 }
 pub fn create(allocator: std.mem.Allocator) !extensions.Module {
     const s = try allocator.create(EnvState);
+    errdefer allocator.destroy(s);
     s.* = .{ .allocator = allocator };
     return .{ .info = .{ .id = ModuleId, .name = module_name, .capabilities = capabilities }, .context = @ptrCast(s), .hooks = .{ .start_fn = start, .stop_fn = stop, .command_fn = command } };
 }
@@ -32,4 +32,11 @@ test "env records key" {
     try m.hooks.command_fn.?(m.context, .{.platform_name="null"}, .{.name="env.get", .payload="PATH", .target=ModuleId});
     const s: *EnvState = @ptrCast(@alignCast(m.context));
     try std.testing.expectEqualStrings("PATH", s.key.?);
+}
+test "env rejects empty key" {
+    const m = try create(std.testing.allocator);
+    defer m.hooks.stop_fn.?(m.context, .{.platform_name="null"}) catch {};
+    try m.hooks.command_fn.?(m.context, .{.platform_name="null"}, .{.name="env.get", .payload="", .target=ModuleId});
+    const s: *EnvState = @ptrCast(@alignCast(m.context));
+    try std.testing.expect(s.key == null);
 }
