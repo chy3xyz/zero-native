@@ -58,13 +58,25 @@ pub fn command(ctx: *anyopaque, runtime: extensions.RuntimeContext, cmd: extensi
         }
     } else if (std.mem.eql(u8, cmd.name, "surface.color")) {
         if (s.id) |id| {
-            // payload: "r,g,b,a" (0.0-1.0)
             var parts = std.mem.splitScalar(u8, cmd.payload, ',');
             const rr = std.fmt.parseFloat(f32, parts.next() orelse return) catch return;
             const gg = std.fmt.parseFloat(f32, parts.next() orelse return) catch return;
             const bb = std.fmt.parseFloat(f32, parts.next() orelse return) catch return;
             const aa = std.fmt.parseFloat(f32, parts.next() orelse return) catch 1.0;
             services.setSurfaceColor(id, rr, gg, bb, aa) catch {};
+        }
+    } else if (std.mem.eql(u8, cmd.name, "surface.shader")) {
+        if (s.id) |id| {
+            _ = services.setSurfaceShader(id, cmd.payload) catch null;
+        }
+    } else if (std.mem.eql(u8, cmd.name, "surface.vertices")) {
+        if (s.id) |id| {
+            services.setSurfaceVertices(id, cmd.payload) catch {};
+        }
+    } else if (std.mem.eql(u8, cmd.name, "surface.draw")) {
+        if (s.id) |id| {
+            const vc = std.fmt.parseUnsigned(usize, cmd.payload, 10) catch 3;
+            services.drawSurface(id, vc) catch {};
         }
     }
 }

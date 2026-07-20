@@ -366,6 +366,9 @@ pub const PlatformServices = struct {
     start_surface_animation_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
     stop_surface_animation_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
     set_surface_color_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId, r: f32, g: f32, b: f32, a: f32) anyerror!void = null,
+    set_surface_shader_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId, src: []const u8) anyerror!bool = null,
+    set_surface_vertices_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId, data: []const u8) anyerror!void = null,
+    draw_surface_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId, vertex_count: usize) anyerror!void = null,
     configure_security_policy_fn: ?*const fn (context: ?*anyopaque, policy: security.Policy) anyerror!void = null,
     emit_window_event_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId, name: []const u8, detail_json: []const u8) anyerror!void = null,
 
@@ -522,6 +525,21 @@ pub const PlatformServices = struct {
     pub fn setSurfaceColor(self: PlatformServices, id: SurfaceId, r: f32, g: f32, b: f32, a: f32) anyerror!void {
         const color_fn = self.set_surface_color_fn orelse return error.UnsupportedService;
         return color_fn(self.context, id, r, g, b, a);
+    }
+
+    pub fn setSurfaceShader(self: PlatformServices, id: SurfaceId, src: []const u8) anyerror!bool {
+        const shader_fn = self.set_surface_shader_fn orelse return error.UnsupportedService;
+        return shader_fn(self.context, id, src);
+    }
+
+    pub fn setSurfaceVertices(self: PlatformServices, id: SurfaceId, data: []const u8) anyerror!void {
+        const vert_fn = self.set_surface_vertices_fn orelse return error.UnsupportedService;
+        return vert_fn(self.context, id, data);
+    }
+
+    pub fn drawSurface(self: PlatformServices, id: SurfaceId, vertex_count: usize) anyerror!void {
+        const draw_fn = self.draw_surface_fn orelse return error.UnsupportedService;
+        return draw_fn(self.context, id, vertex_count);
     }
 
     pub fn configureSecurityPolicy(self: PlatformServices, policy: security.Policy) anyerror!void {

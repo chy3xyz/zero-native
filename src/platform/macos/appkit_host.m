@@ -1865,6 +1865,56 @@ static CVReturn ZeroNativeDisplayLinkCallback(CVDisplayLinkRef link, const CVTim
     self.vertexBuffer = [self.device newBufferWithBytes:vertices length:sizeof(vertices) options:MTLResourceStorageModeShared];
 }
 
+- (BOOL)setShaderSource:(const char *)source length:(size_t)len {
+    NSString *src = [[NSString alloc] initWithBytes:source length:len encoding:NSUTF8StringEncoding];
+    if (!src) return NO;
+    NSError *err = nil;
+    id<MTLLibrary> lib = [self.device newLibraryWithSource:src options:nil error:&err];
+    if (!lib) return NO;
+
+    MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = [lib newFunctionWithName:@"vs"];
+    desc.fragmentFunction = [lib newFunctionWithName:@"fs"];
+    if (!desc.vertexFunction || !desc.fragmentFunction) return NO;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    desc.colorAttachments[0].blendingEnabled = YES;
+    desc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+    desc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+    desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+    desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+
+    id<MTLRenderPipelineState> pipe = [self.device newRenderPipelineStateWithDescriptor:desc error:&err];
+    if (!pipe) return NO;
+    self.pipeline = pipe;
+    return YES;
+}
+
+- (void)setVertices:(const float *)data count:(size_t)count {
+    self.vertexBuffer = [self.device newBufferWithBytes:data length:count * sizeof(float) options:MTLResourceStorageModeShared];
+}
+
+- (void)drawWithVertexCount:(size_t)vc {
+    CAMetalLayer *metalLayer = (CAMetalLayer *)self.layer;
+    id<CAMetalDrawable> drawable = [metalLayer nextDrawable];
+    if (!drawable) return;
+
+    id<MTLCommandBuffer> cmd = [self.queue commandBuffer];
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = drawable.texture;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+    id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
+    if (self.pipeline) [enc setRenderPipelineState:self.pipeline];
+    [enc setVertexBuffer:self.vertexBuffer offset:0 atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:vc];
+    [enc endEncoding];
+
+    [cmd presentDrawable:drawable];
+    [cmd commit];
+}
+
 @end
 
 static NSMutableDictionary<NSNumber *, ZeroNativeMetalView *> *ZeroNativeSurfaceMap(void) {
@@ -1926,6 +1976,25 @@ void zero_native_appkit_set_surface_color(zero_native_appkit_host_t *host, uint3
     (void)host;
     ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
     if (overlay) [overlay setColorR:r g:g b:b a:a];
+}
+
+int zero_native_appkit_set_surface_shader(zero_native_appkit_host_t *host, uint32_t surface_id, const char *src, size_t len) {
+    (void)host;
+    ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
+    if (!overlay) return 0;
+    return [overlay setShaderSource:src length:len] ? 1 : 0;
+}
+
+void zero_native_appkit_set_surface_vertices(zero_native_appkit_host_t *host, uint32_t surface_id, const float *data, size_t count) {
+    (void)host;
+    ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
+    if (overlay) [overlay setVertices:data count:count];
+}
+
+void zero_native_appkit_draw_surface(zero_native_appkit_host_t *host, uint32_t surface_id, size_t vertex_count) {
+    (void)host;
+    ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
+    if (overlay) [overlay drawWithVertexCount:vertex_count];
 }
 
 // ── Carbon hotkey support ────────────────────────────────────────────────

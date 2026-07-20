@@ -120,6 +120,9 @@ extern fn zero_native_appkit_render_surface(host: *AppKitHost, surface_id: u32) 
 extern fn zero_native_appkit_start_surface_animation(host: *AppKitHost, surface_id: u32) void;
 extern fn zero_native_appkit_stop_surface_animation(host: *AppKitHost, surface_id: u32) void;
 extern fn zero_native_appkit_set_surface_color(host: *AppKitHost, surface_id: u32, r: f32, g: f32, b: f32, a: f32) void;
+extern fn zero_native_appkit_set_surface_shader(host: *AppKitHost, surface_id: u32, src: [*]const u8, len: usize) c_int;
+extern fn zero_native_appkit_set_surface_vertices(host: *AppKitHost, surface_id: u32, data: [*]const f32, count: usize) void;
+extern fn zero_native_appkit_draw_surface(host: *AppKitHost, surface_id: u32, vertex_count: usize) void;
 extern fn zero_native_appkit_show_notification(host: *AppKitHost, title: [*]const u8, title_len: usize, body: [*]const u8, body_len: usize) void;
 
 pub const MacPlatform = struct {
@@ -196,6 +199,9 @@ pub const MacPlatform = struct {
                 .start_surface_animation_fn = startAnimationService,
                 .stop_surface_animation_fn = stopAnimationService,
                 .set_surface_color_fn = setColorService,
+                .set_surface_shader_fn = setShaderService,
+                .set_surface_vertices_fn = setVerticesService,
+                .draw_surface_fn = drawSurfaceService,
                 .configure_security_policy_fn = configureSecurityPolicy,
                 .emit_window_event_fn = emitWindowEvent,
             },
@@ -587,6 +593,21 @@ fn stopAnimationService(context: ?*anyopaque, id: platform_mod.SurfaceId) anyerr
 fn setColorService(context: ?*anyopaque, id: platform_mod.SurfaceId, r: f32, g: f32, b: f32, a: f32) anyerror!void {
     const self: *MacPlatform = @ptrCast(@alignCast(context.?));
     self.setSurfaceColor(id, r, g, b, a);
+}
+
+fn setShaderService(context: ?*anyopaque, id: platform_mod.SurfaceId, src: []const u8) anyerror!bool {
+    const self: *MacPlatform = @ptrCast(@alignCast(context.?));
+    return zero_native_appkit_set_surface_shader(self.host, id, src.ptr, src.len) != 0;
+}
+
+fn setVerticesService(context: ?*anyopaque, id: platform_mod.SurfaceId, data: []const u8) anyerror!void {
+    const self: *MacPlatform = @ptrCast(@alignCast(context.?));
+    zero_native_appkit_set_surface_vertices(self.host, id, @ptrCast(@alignCast(data.ptr)), data.len / @sizeOf(f32));
+}
+
+fn drawSurfaceService(context: ?*anyopaque, id: platform_mod.SurfaceId, vertex_count: usize) anyerror!void {
+    const self: *MacPlatform = @ptrCast(@alignCast(context.?));
+    zero_native_appkit_draw_surface(self.host, id, vertex_count);
 }
 
 test "mac platform module exports type" {
