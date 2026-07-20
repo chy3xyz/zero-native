@@ -1,0 +1,76 @@
+# Platform Support
+
+zero-native targets macOS, Linux, and Windows desktop with two web engine choices per platform. This page documents exactly what each host supports today.
+
+## Engine matrix
+
+| Platform | System WebView | Chromium (CEF) |
+|----------|:---:|:---:|
+| macOS (arm64/x64) | ✅ WKWebView | ✅ bundled CEF |
+| Linux (x64/arm64) | ✅ WebKitGTK (GTK4) | 🟡 builds, untested |
+| Windows (x64) | 🟡 WebView2 (in progress) | 🟡 builds, untested |
+| Windows (arm64) | ❌ blocked (Zig bug) | ❌ blocked (Zig bug) |
+
+## Feature support by platform
+
+| Feature | macOS | Linux | Windows |
+|---------|:---:|:---:|:---:|
+| WebView (system) | ✅ | ✅ | 🟡 |
+| WebView (CEF) | ✅ | 🟡 | 🟡 |
+| Multi-window | ✅ | ✅ | 🟡 |
+| Multi-WebView | ✅ | ✅ | 🟡 |
+| Bridge (JS ↔ Zig) | ✅ | ✅ | 🟡 |
+| Channel streaming | ✅ | ✅ | 🟡 |
+| Clipboard (read/write) | ✅ | ✅ | 🟡 |
+| Notifications | ✅ (NSUserNotificationCenter) | ✅ (dbus-send) | ❌ |
+| System tray | ✅ (NSStatusBar) | ✅ (libayatana runtime) | ❌ |
+| File dialogs (open/save) | ✅ (NSOpenPanel) | ✅ (GTK) | ❌ |
+| Message dialogs | ✅ (NSAlert) | ✅ (GTK) | ❌ |
+| Global shortcuts | ✅ (Carbon) | 🟡 (X11 parsed) | ❌ |
+| Deep-link (URL scheme) | ✅ (Info.plist) | ✅ (.desktop MIME) | ❌ |
+| App Sandbox | ✅ (macOS sandbox) | ❌ | ❌ |
+| Automation server | ✅ | ✅ | ❌ |
+| Window state (restore) | ✅ | ✅ | ❌ |
+| Logging/tracing | ✅ | ✅ | ✅ |
+| DevTools (Web Inspector) | ✅ | ✅ | ⬜ |
+
+## Plugin availability
+
+All 24 plugins are registered on all platforms. If a platform service is unavailable, the plugin gracefully returns `UnsupportedService` and falls back to in-memory or no-op behavior.
+
+| Plugin | macOS | Linux | Windows |
+|--------|:---:|:---:|:---:|
+| clipboard | ✅ | ✅ | 🟡 |
+| shell | ✅ | ✅ | ✅ |
+| notification | ✅ | ✅ | ❌ |
+| http/https | ✅ | ✅ | ✅ |
+| deep-link | ✅ | ✅ | ❌ |
+| store (disk) | ✅ | ✅ | ✅ |
+| autostart | ✅ | ✅ | 🟡 |
+| single-instance | ✅ | ✅ | ✅ |
+| updater | ✅ | ✅ | 🟡 |
+| global-shortcut | ✅ | 🟡 | ❌ |
+| websocket (ws://) | ✅ | ✅ | ✅ |
+| websocket (wss://) | ✅ | ✅ | ✅ |
+| process | ✅ | ✅ | ✅ |
+| os | ✅ | ✅ | ✅ |
+| log | ✅ | ✅ | ✅ |
+| cli | ✅ | ✅ | ✅ |
+| sql | ✅ | ✅ | ✅ |
+| path | ✅ | ✅ | ✅ |
+| fs | ✅ | ✅ | ✅ |
+| dialog | ✅ | ✅ | ❌ |
+| env | 🟡 | 🟡 | 🟡 |
+| random | ✅ | ✅ | ✅ |
+| crypto | ✅ | ✅ | ✅ |
+| window | ✅ | ✅ | 🟡 |
+| tray | ✅ | ✅ | ❌ |
+
+## Legend
+
+| Symbol | Meaning |
+|:---:|------|
+| ✅ | Implemented and tested |
+| 🟡 | Implemented, partial or untested |
+| ❌ | Returns `UnsupportedService` or not implemented |
+| ⬜ | Not applicable or future work |

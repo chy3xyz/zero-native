@@ -156,6 +156,31 @@ pub fn auditIn(base_dir: std.Io.Dir, allocator: std.mem.Allocator, io: std.Io, m
         try ctx.add(.@"error", "web-engine", "web_engine = \"cef\" but cef.dir is empty", "set cef.dir to the CEF runtime path (e.g. \"third_party/cef/macos\")");
     }
 
+    // Rule 10: updater feed_url without public_key.
+    if (metadata.updates.feed_url.len > 0 and metadata.updates.public_key.len == 0) {
+        try ctx.add(.warn, "updates", "updates.feed_url is set but updates.public_key is empty", "generate an Ed25519 keypair and add the base64-encoded public key to sign updates");
+    }
+
+    // Rule 11: plugins declared but no bridge commands.
+    if (metadata.plugins.len > 0 and metadata.bridge_commands.len == 0) {
+        try ctx.add(.info, "bridge", "plugins are enabled but no bridge commands are declared", "add bridge commands to expose plugin functionality to the frontend (e.g. .{ .name = \"clipboard.write_text\" })");
+    }
+
+    // Rule 12: deep-link schemes without the deep-link plugin.
+    if (metadata.deep_link_schemes.len > 0 and !pluginListContains(metadata.plugins, "deep-link")) {
+        try ctx.add(.warn, "plugins", "deep_link_schemes declared but \"deep-link\" plugin is not enabled", "add \"deep-link\" to the .plugins list");
+    }
+
+    // Rule 13: no plugins declared.
+    if (metadata.plugins.len == 0) {
+        try ctx.add(.info, "plugins", "no plugins declared — the app has no native capabilities beyond bridge commands", "enable plugins like \"clipboard\", \"store\", \"notification\" to add native features");
+    }
+
+    // Rule 14: excessive allowed origins.
+    if (metadata.security.navigation.allowed_origins.len > 10) {
+        try ctx.add(.warn, "security", "navigation.allowed_origins has many entries — review for unnecessary exposure", "limit origins to only those the app actually loads");
+    }
+
     return .{ .findings = try ctx.findings.toOwnedSlice(allocator) };
 }
 
@@ -169,6 +194,13 @@ fn platformHas(platforms: []const []const u8, target: []const u8) bool {
 fn iconsIncludeExt(icons: []const []const u8, ext: []const u8) bool {
     for (icons) |icon| {
         if (std.mem.endsWith(u8, icon, ext)) return true;
+    }
+    return false;
+}
+
+fn pluginListContains(plugins: []const []const u8, name: []const u8) bool {
+    for (plugins) |p| {
+        if (std.mem.eql(u8, p, name)) return true;
     }
     return false;
 }
@@ -240,6 +272,12 @@ const auditFixture =
     \\  .version = "1.2.3",
     \\  .icons = .{ "assets/icon.icns" },
     \\  .platforms = .{ "macos" },
+    \\  .plugins = .{ "clipboard" },
+    \\  .bridge = .{
+    \\    .commands = .{
+    \\      .{ .name = "clipboard.write_text" },
+    \\    },
+    \\  },
     \\  .security = .{
     \\    .navigation = .{
     \\      .allowed_origins = .{ "zero://app", "zero://inline" },

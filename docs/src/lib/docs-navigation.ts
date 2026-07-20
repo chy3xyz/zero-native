@@ -31,6 +31,7 @@ export const navSections: NavSection[] = [
       { name: "Type-Safe IPC", href: "/bridge/codegen" },
       { name: "Dialogs", href: "/dialogs" },
       { name: "System Tray", href: "/tray" },
+      { name: "Platform Support", href: "/platform-support" },
       { name: "Security", href: "/security" },
     ],
   },

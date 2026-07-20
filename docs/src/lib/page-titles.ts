@@ -54,6 +54,7 @@ export const PAGE_TITLES: Record<string, string> = {
   "api/capability": "API: Capability",
   "api/module-registry": "API: ModuleRegistry",
   "api/sandbox": "API: Sandbox",
+  "platform-support": "Platform Support",
 };
 
 export function getPageTitle(slug: string): string | null {
