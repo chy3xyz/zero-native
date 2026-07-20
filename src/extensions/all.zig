@@ -69,8 +69,9 @@ test "all bundled plugins register without conflicts" {
     const crypto_mod = @import("plugin_crypto.zig");
     const window_mod = @import("plugin_window.zig");
     const tray_mod = @import("plugin_tray.zig");
+    const surface_mod = @import("plugin_surface.zig");
 
-    var modules: [24]extensions.Module = undefined;
+    var modules: [25]extensions.Module = undefined;
 
     modules[0] = try clipboard.create(allocator);
     modules[1] = try shell.create(allocator);
@@ -99,6 +100,7 @@ test "all bundled plugins register without conflicts" {
     modules[21] = try crypto_mod.create(allocator);
     modules[22] = try window_mod.create(allocator);
     modules[23] = try tray_mod.create(allocator);
+    modules[24] = try surface_mod.create(allocator);
 
     // Walk modules in reverse on failure so each `create`'s allocation
     // (and the state struct) is paired with a matching `stop_fn`. We

@@ -299,6 +299,15 @@ pub const NotificationOptions = struct {
     icon: []const u8 = "",
 };
 
+pub const SurfaceId = u32;
+
+pub const SurfaceFrame = struct {
+    x: f64 = 0,
+    y: f64 = 0,
+    width: f64 = 100,
+    height: f64 = 100,
+};
+
 pub const Event = union(enum) {
     app_start,
     frame_requested,
@@ -350,6 +359,9 @@ pub const PlatformServices = struct {
     create_tray_fn: ?*const fn (context: ?*anyopaque, options: TrayOptions) anyerror!void = null,
     update_tray_menu_fn: ?*const fn (context: ?*anyopaque, items: []const TrayMenuItem) anyerror!void = null,
     remove_tray_fn: ?*const fn (context: ?*anyopaque) anyerror!void = null,
+    create_surface_fn: ?*const fn (context: ?*anyopaque, frame: SurfaceFrame) anyerror!SurfaceId = null,
+    close_surface_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
+    set_surface_frame_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId, frame: SurfaceFrame) anyerror!void = null,
     configure_security_policy_fn: ?*const fn (context: ?*anyopaque, policy: security.Policy) anyerror!void = null,
     emit_window_event_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId, name: []const u8, detail_json: []const u8) anyerror!void = null,
 
@@ -471,6 +483,21 @@ pub const PlatformServices = struct {
     pub fn removeTray(self: PlatformServices) anyerror!void {
         const remove_fn = self.remove_tray_fn orelse return error.UnsupportedService;
         return remove_fn(self.context);
+    }
+
+    pub fn createSurface(self: PlatformServices, frame: SurfaceFrame) anyerror!SurfaceId {
+        const create_fn = self.create_surface_fn orelse return error.UnsupportedService;
+        return create_fn(self.context, frame);
+    }
+
+    pub fn closeSurface(self: PlatformServices, id: SurfaceId) anyerror!void {
+        const close_fn = self.close_surface_fn orelse return error.UnsupportedService;
+        return close_fn(self.context, id);
+    }
+
+    pub fn setSurfaceFrame(self: PlatformServices, id: SurfaceId, frame: SurfaceFrame) anyerror!void {
+        const set_fn = self.set_surface_frame_fn orelse return error.UnsupportedService;
+        return set_fn(self.context, id, frame);
     }
 
     pub fn configureSecurityPolicy(self: PlatformServices, policy: security.Policy) anyerror!void {

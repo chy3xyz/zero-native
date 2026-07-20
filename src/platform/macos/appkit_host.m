@@ -1742,6 +1742,48 @@ void zero_native_appkit_show_notification(zero_native_appkit_host_t *host, const
     }
 }
 
+// ── GPU Surface overlay ──────────────────────────────────────────────────
+
+static NSMutableDictionary<NSNumber *, NSView *> *ZeroNativeSurfaceMap(void) {
+    static NSMutableDictionary *map = nil;
+    if (!map) map = [NSMutableDictionary dictionary];
+    return map;
+}
+
+uint32_t zero_native_appkit_create_surface(zero_native_appkit_host_t *host, double x, double y, double width, double height) {
+    ZeroNativeAppKitHost *obj = (__bridge ZeroNativeAppKitHost *)host;
+    static uint32_t next_id = 1;
+    uint32_t surface_id = next_id++;
+
+    NSView *container = obj.window.contentView;
+    NSRect frame = NSMakeRect(x, y, width, height);
+    NSView *overlay = [[NSView alloc] initWithFrame:frame];
+    overlay.wantsLayer = YES;
+    overlay.layer.backgroundColor = [[NSColor clearColor] CGColor];
+    overlay.layer.opaque = NO;
+    [container addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
+
+    ZeroNativeSurfaceMap()[@(surface_id)] = overlay;
+    return surface_id;
+}
+
+void zero_native_appkit_close_surface(zero_native_appkit_host_t *host, uint32_t surface_id) {
+    (void)host;
+    NSView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
+    if (overlay) {
+        [overlay removeFromSuperview];
+        [ZeroNativeSurfaceMap() removeObjectForKey:@(surface_id)];
+    }
+}
+
+void zero_native_appkit_set_surface_frame(zero_native_appkit_host_t *host, uint32_t surface_id, double x, double y, double width, double height) {
+    (void)host;
+    NSView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
+    if (overlay) {
+        overlay.frame = NSMakeRect(x, y, width, height);
+    }
+}
+
 // ── Carbon hotkey support ────────────────────────────────────────────────
 
 static OSStatus ZeroNativeHotkeyHandler(EventHandlerCallRef callRef, EventRef event, void *userData) {

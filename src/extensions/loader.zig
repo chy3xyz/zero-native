@@ -133,6 +133,8 @@ fn createPlugin(
         return @import("plugin_window.zig").create(allocator);
     } else if (std.mem.eql(u8, name, "tray")) {
         return @import("plugin_tray.zig").create(allocator);
+    } else if (std.mem.eql(u8, name, "surface")) {
+        return @import("plugin_surface.zig").create(allocator);
     }
     for (config.custom_plugins) |plugin| {
         if (std.mem.eql(u8, name, plugin.name)) {

@@ -113,6 +113,9 @@ extern fn zero_native_appkit_create_tray(host: *AppKitHost, icon_path: [*]const 
 extern fn zero_native_appkit_update_tray_menu(host: *AppKitHost, item_ids: [*]const u32, labels: [*]const [*]const u8, label_lens: [*]const usize, separators: [*]const c_int, enabled_flags: [*]const c_int, count: usize) void;
 extern fn zero_native_appkit_remove_tray(host: *AppKitHost) void;
 extern fn zero_native_appkit_set_tray_callback(host: *AppKitHost, callback: AppKitTrayCallback, context: ?*anyopaque) void;
+extern fn zero_native_appkit_create_surface(host: *AppKitHost, x: f64, y: f64, width: f64, height: f64) u32;
+extern fn zero_native_appkit_close_surface(host: *AppKitHost, surface_id: u32) void;
+extern fn zero_native_appkit_set_surface_frame(host: *AppKitHost, surface_id: u32, x: f64, y: f64, width: f64, height: f64) void;
 extern fn zero_native_appkit_show_notification(host: *AppKitHost, title: [*]const u8, title_len: usize, body: [*]const u8, body_len: usize) void;
 
 pub const MacPlatform = struct {
@@ -182,6 +185,9 @@ pub const MacPlatform = struct {
                 .create_tray_fn = createTray,
                 .update_tray_menu_fn = updateTrayMenu,
                 .remove_tray_fn = removeTray,
+                .create_surface_fn = createSurface,
+                .close_surface_fn = closeSurface,
+                .set_surface_frame_fn = setSurfaceFrame,
                 .configure_security_policy_fn = configureSecurityPolicy,
                 .emit_window_event_fn = emitWindowEvent,
             },
@@ -522,6 +528,21 @@ fn flattenFilters(filters: []const platform_mod.FileFilter, buffer: []u8) []cons
         }
     }
     return buffer[0..offset];
+}
+
+fn createSurface(context: ?*anyopaque, frame: platform_mod.SurfaceFrame) anyerror!platform_mod.SurfaceId {
+    const self: *MacPlatform = @ptrCast(@alignCast(context.?));
+    return zero_native_appkit_create_surface(self.host, frame.x, frame.y, frame.width, frame.height);
+}
+
+fn closeSurface(context: ?*anyopaque, id: platform_mod.SurfaceId) anyerror!void {
+    const self: *MacPlatform = @ptrCast(@alignCast(context.?));
+    zero_native_appkit_close_surface(self.host, id);
+}
+
+fn setSurfaceFrame(context: ?*anyopaque, id: platform_mod.SurfaceId, frame: platform_mod.SurfaceFrame) anyerror!void {
+    const self: *MacPlatform = @ptrCast(@alignCast(context.?));
+    zero_native_appkit_set_surface_frame(self.host, id, frame.x, frame.y, frame.width, frame.height);
 }
 
 test "mac platform module exports type" {

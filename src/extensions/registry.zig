@@ -47,6 +47,7 @@ const plugin_random = @import("plugin_random.zig");
 const plugin_crypto = @import("plugin_crypto.zig");
 const plugin_window = @import("plugin_window.zig");
 const plugin_tray = @import("plugin_tray.zig");
+const plugin_surface = @import("plugin_surface.zig");
 const plugin_store = @import("plugin_store.zig");
 const plugin_updater = @import("plugin_updater.zig");
 const plugin_websocket = @import("plugin_websocket.zig");
@@ -227,6 +228,8 @@ fn createPlugin(
         return plugin_window.create(allocator);
     } else if (std.mem.eql(u8, name, "tray")) {
         return plugin_tray.create(allocator);
+    } else if (std.mem.eql(u8, name, "surface")) {
+        return plugin_surface.create(allocator);
     }
     for (config.custom_plugins) |plugin| {
         if (std.mem.eql(u8, name, plugin.name)) {
@@ -304,6 +307,7 @@ test "registry loads all bundled plugins successfully" {
         "crypto",
         "window",
         "tray",
+        "surface",
     };
 
     const metadata = try makeMetadata(allocator, &all_names);
@@ -382,6 +386,7 @@ test "registry produces modules with unique non-zero ids" {
         "crypto",
         "window",
         "tray",
+        "surface",
     };
 
     const metadata = try makeMetadata(allocator, &all_names);
