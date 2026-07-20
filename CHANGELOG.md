@@ -2,7 +2,51 @@
 
 All notable changes to zero-native will be documented in this file.
 
+
 <!-- release:start -->
+## 0.4.0 — 2026-07-20
+
+### GPU Surface — JS-programmable Metal/OpenGL canvas
+
+- **25th plugin**: `surface` (ModuleId=125) — GPU-backed transparent overlay on top of WebView
+- **Phase 1**: Platform overlay abstraction (create/position/close)
+- **Phase 2**: Metal rendering pipeline (CAMetalLayer, MTLDevice, MSL shaders, alpha blending)
+- **Phase 3**: `surface.color` — JS-controllable vertex colors at runtime
+- **Phase 4**: CVDisplayLink 60fps auto-render via `surface.animate`/`surface.stop`
+- **Phase 5**: Linux GtkGLArea + OpenGL stubs
+- **Phase 6**: `surface.shader` (custom MSL source), `surface.vertices` (raw vertex data), `surface.draw` (GPU draw call) — fully JS-programmable GPU canvas
+
+### Automation VCR
+
+- Record/replay session files with frame fingerprinting (SHA-256 hash)
+- `zero-native automate record [path]` — captures frames + bridge commands
+- `zero-native automate replay <path>` — replays and verifies hashes match
+- Frame mismatch detection with pass/fail reporting
+
+### Platform hardening
+
+- All 25 plugins: errdefer rollback on create failure, defer free for owned strings
+- `plugin_fs`: path traversal protection (rejects `..` and empty paths)
+- `plugin_env`: empty key rejection
+- `plugin_crypto`: hexEncode errdefer
+
+### Developer experience
+
+- Built-in DevTools: WKWebView inspector always enabled (right-click → Inspect Element)
+- Linux WebKitGTK: developer extras + console-to-stdout
+- `app.zon`: `.debug.devtools` flag in metadata
+- Audit command: 14 rules (up from 9) including updater key, bridge commands, deep-link plugin, no plugins, excessive origins
+- Platform support matrix docs page
+- Calculator and Notes example apps
+
+### Tests
+
+- Edge case coverage: empty payloads, invalid inputs, path traversal, write/read round-trip
+- Window focus invalid ID handling
+- Tray multi-item add/list test
+
+<!-- release:end -->
+
 ## 0.3.0 — 2026-06-16
 
 ### Plugins — 24 bundled (up from 11)
@@ -44,7 +88,7 @@ All notable changes to zero-native will be documented in this file.
 - 5 new plugin doc pages (process, os, log, cli, sql)
 - field name fix: capabilities → feature_capabilities
 
-<!-- release:end -->
+
 
 ## Unreleased
 
@@ -91,7 +135,7 @@ All notable changes to zero-native will be documented in this file.
 
 ## 0.2.0
 
-<!-- release:start -->
+
 
 ### New Features
 
@@ -121,7 +165,7 @@ All notable changes to zero-native will be documented in this file.
 - @Anshuman71
 - @PrathamGhaywat
 - @ctate
-<!-- release:end -->
+
 
 ## 0.1.9
 
