@@ -67,6 +67,11 @@ extern fn zero_native_gtk_clipboard_read(host: *GtkHost, buffer: [*]u8, buffer_l
 extern fn zero_native_gtk_clipboard_write(host: *GtkHost, text: [*]const u8, text_len: usize) void;
 
 extern fn zero_native_gtk_set_tray_callback(host: *GtkHost, callback: GtkTrayCallback, context: ?*anyopaque) void;
+extern fn zero_native_gtk_create_surface(host: *GtkHost, x: f64, y: f64, width: f64, height: f64) u32;
+extern fn zero_native_gtk_close_surface(host: *GtkHost, surface_id: u32) void;
+extern fn zero_native_gtk_set_surface_frame(host: *GtkHost, surface_id: u32, x: f64, y: f64, width: f64, height: f64) void;
+extern fn zero_native_gtk_render_surface(host: *GtkHost, surface_id: u32) void;
+extern fn zero_native_gtk_set_surface_color(host: *GtkHost, surface_id: u32, r: f32, g: f32, b: f32, a: f32) void;
 extern fn zero_native_gtk_create_tray(host: *GtkHost, icon_path: [*]const u8, icon_path_len: usize, tooltip: [*]const u8, tooltip_len: usize) void;
 extern fn zero_native_gtk_update_tray_menu(host: *GtkHost, item_ids: [*]const u32, labels: [*]const [*]const u8, label_lens: [*]const usize, separators: [*]const c_int, enabled_flags: [*]const c_int, count: usize) void;
 extern fn zero_native_gtk_remove_tray(host: *GtkHost) void;

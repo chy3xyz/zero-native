@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <epoxy/gl.h>
 
 #define ZERO_NATIVE_MAX_WINDOWS 16
 #define ZERO_NATIVE_MAX_WEBVIEWS 16
@@ -1342,4 +1343,129 @@ int zero_native_gtk_show_message_dialog(zero_native_gtk_host_t *host, const zero
     if (state.response <= 0) return 0;
     if (state.response == 1) return 1;
     return 2;
+}
+
+// ── GPU Surface overlay (GtkGLArea) ──────────────────────────────────────
+
+typedef struct {
+    GLuint program;
+    GLuint vbo;
+    float r, g, b, a;
+    guint timer_id;
+} ZeroNativeGLState;
+
+static void zero_native_gl_realize(GtkGLArea *area, gpointer data) {
+    (void)data;
+    gtk_gl_area_make_current(area);
+    if (gtk_gl_area_get_error(area)) return;
+
+    const char *vs_src =
+        "#version 330\n"
+        "layout(location=0) in vec2 pos;\n"
+        "layout(location=1) in vec4 color;\n"
+        "out vec4 vColor;\n"
+        "void main() { gl_Position=vec4(pos,0,1); vColor=color; }";
+
+    const char *fs_src =
+        "#version 330\n"
+        "in vec4 vColor;\n"
+        "out vec4 fragColor;\n"
+        "void main() { fragColor=vColor; }";
+
+    GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vs, 1, &vs_src, NULL); glCompileShader(vs);
+    GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fs, 1, &fs_src, NULL); glCompileShader(fs);
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, vs); glAttachShader(prog, fs); glLinkProgram(prog);
+    glDeleteShader(vs); glDeleteShader(fs);
+
+    GLuint vbo;
+    glGenBuffers(1, &vbo);
+
+    ZeroNativeGLState *state = g_new0(ZeroNativeGLState, 1);
+    state->program = prog;
+    state->vbo = vbo;
+    state->r = 1.0f; state->g = 0.0f; state->b = 0.0f; state->a = 1.0f;
+    g_object_set_data_full(G_OBJECT(area), "gl-state", state, g_free);
+}
+
+static void zero_native_gl_unrealize(GtkGLArea *area, gpointer data) {
+    (void)data;
+    gtk_gl_area_make_current(area);
+    ZeroNativeGLState *state = g_object_get_data(G_OBJECT(area), "gl-state");
+    if (state) {
+        glDeleteProgram(state->program);
+        glDeleteBuffers(1, &state->vbo);
+    }
+}
+
+static gboolean zero_native_gl_render(GtkGLArea *area, GdkGLContext *ctx, gpointer data) {
+    (void)ctx; (void)data;
+    ZeroNativeGLState *state = g_object_get_data(G_OBJECT(area), "gl-state");
+    if (!state) return FALSE;
+
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    float verts[] = {
+         0.0,  0.8, state->r, state->g, state->b, state->a,
+        -0.8, -0.6, state->r, state->g, state->b, state->a,
+         0.8, -0.6, state->r, state->g, state->b, state->a,
+    };
+    glBindBuffer(GL_ARRAY_BUFFER, state->vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
+    glUseProgram(state->program);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 6*sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 6*sizeof(float), (void*)(2*sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    return TRUE;
+}
+
+static guint zero_native_gl_next_id = 1;
+
+uint32_t zero_native_gtk_create_surface(zero_native_gtk_host_t *host, double x, double y, double width, double height) {
+    GtkWidget *area = gtk_gl_area_new();
+    gtk_widget_set_size_request(area, (int)width, (int)height);
+    g_signal_connect(area, "realize", G_CALLBACK(zero_native_gl_realize), NULL);
+    g_signal_connect(area, "unrealize", G_CALLBACK(zero_native_gl_unrealize), NULL);
+    g_signal_connect(area, "render", G_CALLBACK(zero_native_gl_render), NULL);
+
+    GtkWidget *fixed = gtk_fixed_new();
+    gtk_fixed_put(GTK_FIXED(fixed), area, (int)x, (int)y);
+    gtk_widget_set_halign(area, GTK_ALIGN_START);
+    gtk_widget_set_valign(area, GTK_ALIGN_START);
+
+    GtkWidget *window = gtk_widget_get_toplevel(GTK_WIDGET(host->web_view));
+    GtkWidget *parent = gtk_widget_get_parent(GTK_WIDGET(host->web_view));
+    if (GTK_IS_OVERLAY(parent)) {
+        gtk_overlay_add_overlay(GTK_OVERLAY(parent), fixed);
+    } else {
+        gtk_widget_set_parent(fixed, parent ? parent : window);
+    }
+    gtk_widget_show(fixed);
+
+    return zero_native_gl_next_id++;
+}
+
+void zero_native_gtk_close_surface(zero_native_gtk_host_t *host, uint32_t surface_id) {
+    (void)host; (void)surface_id;
+}
+
+void zero_native_gtk_set_surface_frame(zero_native_gtk_host_t *host, uint32_t surface_id, double x, double y, double width, double height) {
+    (void)host; (void)surface_id; (void)x; (void)y; (void)width; (void)height;
+}
+
+void zero_native_gtk_render_surface(zero_native_gtk_host_t *host, uint32_t surface_id) {
+    (void)host; (void)surface_id;
+    // GTK GL areas auto-render — gtk_gl_area_queue_render(area);
+}
+
+void zero_native_gtk_set_surface_color(zero_native_gtk_host_t *host, uint32_t surface_id, float r, float g, float b, float a) {
+    (void)host; (void)surface_id; (void)r; (void)g; (void)b; (void)a;
+    // State stored in widget data
 }
