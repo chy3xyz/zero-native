@@ -362,6 +362,7 @@ pub const PlatformServices = struct {
     create_surface_fn: ?*const fn (context: ?*anyopaque, frame: SurfaceFrame) anyerror!SurfaceId = null,
     close_surface_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
     set_surface_frame_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId, frame: SurfaceFrame) anyerror!void = null,
+    render_surface_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
     configure_security_policy_fn: ?*const fn (context: ?*anyopaque, policy: security.Policy) anyerror!void = null,
     emit_window_event_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId, name: []const u8, detail_json: []const u8) anyerror!void = null,
 
@@ -498,6 +499,11 @@ pub const PlatformServices = struct {
     pub fn setSurfaceFrame(self: PlatformServices, id: SurfaceId, frame: SurfaceFrame) anyerror!void {
         const set_fn = self.set_surface_frame_fn orelse return error.UnsupportedService;
         return set_fn(self.context, id, frame);
+    }
+
+    pub fn renderSurface(self: PlatformServices, id: SurfaceId) anyerror!void {
+        const render_fn = self.render_surface_fn orelse return error.UnsupportedService;
+        return render_fn(self.context, id);
     }
 
     pub fn configureSecurityPolicy(self: PlatformServices, policy: security.Policy) anyerror!void {

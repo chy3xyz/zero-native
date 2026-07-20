@@ -5,6 +5,8 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <Carbon/Carbon.h>
+#import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
 #include <string.h>
 
 @class ZeroNativeAppKitHost;
@@ -1742,9 +1744,96 @@ void zero_native_appkit_show_notification(zero_native_appkit_host_t *host, const
     }
 }
 
-// ── GPU Surface overlay ──────────────────────────────────────────────────
+// ── GPU Surface overlay (Metal-backed) ───────────────────────────────────
 
-static NSMutableDictionary<NSNumber *, NSView *> *ZeroNativeSurfaceMap(void) {
+@interface ZeroNativeMetalView : NSView
+@property(nonatomic, strong) id<MTLDevice> device;
+@property(nonatomic, strong) id<MTLCommandQueue> queue;
+@property(nonatomic, strong) id<MTLRenderPipelineState> pipeline;
+@property(nonatomic, strong) id<MTLBuffer> vertexBuffer;
+- (void)render;
+@end
+
+@implementation ZeroNativeMetalView
+
++ (Class)layerClass { return [CAMetalLayer class]; }
+
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+
+    self.device = MTLCreateSystemDefaultDevice();
+    self.queue = [self.device newCommandQueue];
+
+    CAMetalLayer *metalLayer = (CAMetalLayer *)self.layer;
+    metalLayer.device = self.device;
+    metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    metalLayer.framebufferOnly = YES;
+    metalLayer.opaque = NO;
+    metalLayer.backgroundColor = [[NSColor clearColor] CGColor];
+
+    // Simple triangle vertices (x, y, r, g, b, a)
+    float vertices[] = {
+         0.0,  0.8, 1.0, 0.0, 0.0, 1.0,  // top red
+        -0.8, -0.6, 0.0, 1.0, 0.0, 1.0,  // bottom-left green
+         0.8, -0.6, 0.0, 0.0, 1.0, 1.0,  // bottom-right blue
+    };
+    self.vertexBuffer = [self.device newBufferWithBytes:vertices length:sizeof(vertices) options:MTLResourceStorageModeShared];
+
+    // Compile shaders from MSL source
+    NSString *shaderSrc = @""
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct VertexOut { float4 pos [[position]]; float4 color; };\n"
+    "vertex VertexOut vs(uint vid [[vertex_id]], constant float4 *v [[buffer(0)]]) {\n"
+    "  VertexOut out; out.pos = float4(v[vid].xy, 0, 1); out.color = v[vid]; return out; }\n"
+    "fragment float4 fs(VertexOut in [[stage_in]]) { return in.color; }";
+
+    NSError *err = nil;
+    id<MTLLibrary> lib = [self.device newLibraryWithSource:shaderSrc options:nil error:&err];
+    if (!lib) { NSLog(@"Metal shader compile failed: %@", err); return self; }
+
+    MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = [lib newFunctionWithName:@"vs"];
+    desc.fragmentFunction = [lib newFunctionWithName:@"fs"];
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    desc.colorAttachments[0].blendingEnabled = YES;
+    desc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+    desc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+    desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+    desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+
+    self.pipeline = [self.device newRenderPipelineStateWithDescriptor:desc error:&err];
+    if (!self.pipeline) { NSLog(@"Metal pipeline failed: %@", err); }
+
+    return self;
+}
+
+- (void)render {
+    CAMetalLayer *metalLayer = (CAMetalLayer *)self.layer;
+    id<CAMetalDrawable> drawable = [metalLayer nextDrawable];
+    if (!drawable) return;
+
+    id<MTLCommandBuffer> cmd = [self.queue commandBuffer];
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = drawable.texture;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+    id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
+    [enc setRenderPipelineState:self.pipeline];
+    [enc setVertexBuffer:self.vertexBuffer offset:0 atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
+
+    [cmd presentDrawable:drawable];
+    [cmd commit];
+}
+
+@end
+
+static NSMutableDictionary<NSNumber *, ZeroNativeMetalView *> *ZeroNativeSurfaceMap(void) {
     static NSMutableDictionary *map = nil;
     if (!map) map = [NSMutableDictionary dictionary];
     return map;
@@ -1757,10 +1846,7 @@ uint32_t zero_native_appkit_create_surface(zero_native_appkit_host_t *host, doub
 
     NSView *container = obj.window.contentView;
     NSRect frame = NSMakeRect(x, y, width, height);
-    NSView *overlay = [[NSView alloc] initWithFrame:frame];
-    overlay.wantsLayer = YES;
-    overlay.layer.backgroundColor = [[NSColor clearColor] CGColor];
-    overlay.layer.opaque = NO;
+    ZeroNativeMetalView *overlay = [[ZeroNativeMetalView alloc] initWithFrame:frame];
     [container addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
 
     ZeroNativeSurfaceMap()[@(surface_id)] = overlay;
@@ -1769,7 +1855,7 @@ uint32_t zero_native_appkit_create_surface(zero_native_appkit_host_t *host, doub
 
 void zero_native_appkit_close_surface(zero_native_appkit_host_t *host, uint32_t surface_id) {
     (void)host;
-    NSView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
+    ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
     if (overlay) {
         [overlay removeFromSuperview];
         [ZeroNativeSurfaceMap() removeObjectForKey:@(surface_id)];
@@ -1778,10 +1864,16 @@ void zero_native_appkit_close_surface(zero_native_appkit_host_t *host, uint32_t 
 
 void zero_native_appkit_set_surface_frame(zero_native_appkit_host_t *host, uint32_t surface_id, double x, double y, double width, double height) {
     (void)host;
-    NSView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
+    ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
     if (overlay) {
         overlay.frame = NSMakeRect(x, y, width, height);
     }
+}
+
+void zero_native_appkit_render_surface(zero_native_appkit_host_t *host, uint32_t surface_id) {
+    (void)host;
+    ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
+    if (overlay) [overlay render];
 }
 
 // ── Carbon hotkey support ────────────────────────────────────────────────

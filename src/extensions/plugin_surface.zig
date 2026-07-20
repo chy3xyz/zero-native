@@ -44,6 +44,10 @@ pub fn command(ctx: *anyopaque, runtime: extensions.RuntimeContext, cmd: extensi
             services.closeSurface(id) catch {};
             s.id = null;
         }
+    } else if (std.mem.eql(u8, cmd.name, "surface.render")) {
+        if (s.id) |id| {
+            services.renderSurface(id) catch {};
+        }
     }
 }
 
