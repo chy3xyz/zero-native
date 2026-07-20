@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Notes</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1c1c1e;color:#fff;padding:20px}
+h1{font-size:24px;font-weight:600;margin-bottom:16px}
+#editor{width:100%;height:300px;background:#2c2c2e;border:1px solid #3a3a3c;border-radius:12px;color:#fff;padding:16px;font-size:16px;resize:vertical;outline:none;margin-bottom:12px}
+.toolbar{display:flex;gap:8px;margin-bottom:16px}
+.btn{padding:10px 20px;border:none;border-radius:10px;font-size:14px;cursor:pointer;background:#505050;color:#fff}
+.btn:hover{background:#606060}
+.btn.primary{background:#0a84ff}
+.btn.primary:hover{background:#409cff}
+#list{display:flex;flex-direction:column;gap:8px}
+.note{background:#2c2c2e;border-radius:10px;padding:14px;cursor:pointer}
+.note:hover{background:#3a3a3c}
+.note .title{font-weight:600;margin-bottom:4px}
+.note .preview{color:#98989d;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+</style>
+</head>
+<body>
+<h1>📝 Notes</h1>
+<div class="toolbar">
+  <button class="btn primary" onclick="newNote()">New</button>
+  <button class="btn" onclick="saveNote()">Save</button>
+  <button class="btn" onclick="deleteNote()">Delete</button>
+</div>
+<input id="title" placeholder="Title" style="width:100%;background:#2c2c2e;border:1px solid #3a3a3c;border-radius:10px;color:#fff;padding:10px;font-size:16px;margin-bottom:8px;outline:none">
+<textarea id="editor" placeholder="Write something..."></textarea>
+<div id="list"></div>
+<script>
+let notes=JSON.parse(localStorage.getItem('notes')||'[]'),currentIndex=-1
+function render(){let h='';notes.forEach((n,i)=>{h+=`<div class="note" onclick="select(${i})"><div class="title">${n.title||'Untitled'}</div><div class="preview">${n.body.substring(0,80)}</div></div>`});document.getElementById('list').innerHTML=h}
+function select(i){currentIndex=i;document.getElementById('title').value=notes[i].title;document.getElementById('editor').value=notes[i].body}
+function newNote(){currentIndex=notes.length;notes.push({title:'',body:''});document.getElementById('title').value='';document.getElementById('editor').value='';render()}
+function saveNote(){if(currentIndex<0)return;notes[currentIndex]={title:document.getElementById('title').value,body:document.getElementById('editor').value};localStorage.setItem('notes',JSON.stringify(notes));render()}
+function deleteNote(){if(currentIndex<0)return;notes.splice(currentIndex,1);currentIndex=-1;document.getElementById('title').value='';document.getElementById('editor').value='';localStorage.setItem('notes',JSON.stringify(notes));render()}
+render()
+</script>
+</body>
+</html>

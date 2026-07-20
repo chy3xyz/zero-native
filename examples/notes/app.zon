@@ -1,0 +1,12 @@
+.{
+    .id = "dev.zero_native.examples.notes",
+    .name = "notes",
+    .display_name = "Notes",
+    .version = "1.0.0",
+    .platforms = .{ "macos", "linux" },
+    .feature_capabilities = .{ "webview", "js_bridge" },
+    .web_engine = "system",
+    .windows = .{
+        .{ .label = "main", .title = "Notes", .width = 500, .height = 600 },
+    },
+}

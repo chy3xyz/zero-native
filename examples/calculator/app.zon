@@ -1,0 +1,12 @@
+.{
+    .id = "dev.zero_native.examples.calculator",
+    .name = "calculator",
+    .display_name = "Calculator",
+    .version = "1.0.0",
+    .platforms = .{ "macos", "linux" },
+    .feature_capabilities = .{ "webview", "js_bridge" },
+    .web_engine = "system",
+    .windows = .{
+        .{ .label = "main", .title = "Calculator", .width = 340, .height = 560 },
+    },
+}

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Calculator</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1c1c1e;color:#fff;display:flex;justify-content:center;align-items:center;height:100vh}
+.calc{width:320px;padding:20px}
+.display{background:#2c2c2e;border-radius:12px;padding:20px;text-align:right;font-size:40px;font-weight:300;margin-bottom:16px;min-height:80px;word-break:break-all}
+.buttons{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.btn{border:none;border-radius:12px;font-size:24px;padding:18px;cursor:pointer;transition:opacity .15s}
+.btn:active{opacity:.7}
+.num{background:#505050;color:#fff}
+.op{background:#ff9500;color:#fff}
+.fn{background:#d4d4d2;color:#000}
+.wide{grid-column:span 2}
+</style>
+</head>
+<body>
+<div class="calc">
+  <div class="display" id="display">0</div>
+  <div class="buttons">
+    <button class="btn fn" onclick="clearAll()">AC</button>
+    <button class="btn fn" onclick="toggleSign()">±</button>
+    <button class="btn fn" onclick="percent()">%</button>
+    <button class="btn op" onclick="operator('/')">÷</button>
+    <button class="btn num" onclick="digit('7')">7</button>
+    <button class="btn num" onclick="digit('8')">8</button>
+    <button class="btn num" onclick="digit('9')">9</button>
+    <button class="btn op" onclick="operator('*')">×</button>
+    <button class="btn num" onclick="digit('4')">4</button>
+    <button class="btn num" onclick="digit('5')">5</button>
+    <button class="btn num" onclick="digit('6')">6</button>
+    <button class="btn op" onclick="operator('-')">−</button>
+    <button class="btn num" onclick="digit('1')">1</button>
+    <button class="btn num" onclick="digit('2')">2</button>
+    <button class="btn num" onclick="digit('3')">3</button>
+    <button class="btn op" onclick="operator('+')">+</button>
+    <button class="btn num wide" onclick="digit('0')">0</button>
+    <button class="btn num" onclick="digit('.')">.</button>
+    <button class="btn op" onclick="calculate()">=</button>
+  </div>
+</div>
+<script>
+let current='0',prev='',op='',fresh=true
+function digit(d){if(fresh){current=d;fresh=false}else{current+=d}update()}
+function operator(o){if(!fresh){if(prev){calculate()};prev=current;op=o;fresh=true}}
+function calculate(){if(!prev||fresh)return;let a=parseFloat(prev),b=parseFloat(current);
+switch(op){case'+':current=''+(a+b);break;case'-':current=''+(a-b);break;
+case'*':current=''+(a*b);break;case'/':current=b?''+(a/b):'Error';break}
+prev='';op='';fresh=true;update()}
+function clearAll(){current='0';prev='';op='';fresh=true;update()}
+function toggleSign(){if(current!=='0'){current=''+(-parseFloat(current));update()}}
+function percent(){current=''+(parseFloat(current)/100);update()}
+function update(){document.getElementById('display').textContent=current}
+</script>
+</body>
+</html>
