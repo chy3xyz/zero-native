@@ -119,7 +119,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0-dev.813+2153f8143
+          version: 0.17.0-dev.1422+e863bf3be
 
       - name: Extract changelog entry
         run: |
