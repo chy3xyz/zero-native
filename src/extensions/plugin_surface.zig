@@ -48,6 +48,14 @@ pub fn command(ctx: *anyopaque, runtime: extensions.RuntimeContext, cmd: extensi
         if (s.id) |id| {
             services.renderSurface(id) catch {};
         }
+    } else if (std.mem.eql(u8, cmd.name, "surface.animate")) {
+        if (s.id) |id| {
+            services.startSurfaceAnimation(id) catch {};
+        }
+    } else if (std.mem.eql(u8, cmd.name, "surface.stop")) {
+        if (s.id) |id| {
+            services.stopSurfaceAnimation(id) catch {};
+        }
     }
 }
 

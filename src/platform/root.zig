@@ -363,6 +363,8 @@ pub const PlatformServices = struct {
     close_surface_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
     set_surface_frame_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId, frame: SurfaceFrame) anyerror!void = null,
     render_surface_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
+    start_surface_animation_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
+    stop_surface_animation_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
     configure_security_policy_fn: ?*const fn (context: ?*anyopaque, policy: security.Policy) anyerror!void = null,
     emit_window_event_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId, name: []const u8, detail_json: []const u8) anyerror!void = null,
 
@@ -504,6 +506,16 @@ pub const PlatformServices = struct {
     pub fn renderSurface(self: PlatformServices, id: SurfaceId) anyerror!void {
         const render_fn = self.render_surface_fn orelse return error.UnsupportedService;
         return render_fn(self.context, id);
+    }
+
+    pub fn startSurfaceAnimation(self: PlatformServices, id: SurfaceId) anyerror!void {
+        const start_fn = self.start_surface_animation_fn orelse return error.UnsupportedService;
+        return start_fn(self.context, id);
+    }
+
+    pub fn stopSurfaceAnimation(self: PlatformServices, id: SurfaceId) anyerror!void {
+        const stop_fn = self.stop_surface_animation_fn orelse return error.UnsupportedService;
+        return stop_fn(self.context, id);
     }
 
     pub fn configureSecurityPolicy(self: PlatformServices, policy: security.Policy) anyerror!void {

@@ -7,6 +7,7 @@
 #import <Carbon/Carbon.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <CoreVideo/CVDisplayLink.h>
 #include <string.h>
 
 @class ZeroNativeAppKitHost;
@@ -1751,7 +1752,10 @@ void zero_native_appkit_show_notification(zero_native_appkit_host_t *host, const
 @property(nonatomic, strong) id<MTLCommandQueue> queue;
 @property(nonatomic, strong) id<MTLRenderPipelineState> pipeline;
 @property(nonatomic, strong) id<MTLBuffer> vertexBuffer;
+@property(nonatomic, assign) CVDisplayLinkRef displayLink;
 - (void)render;
+- (void)startAnimating;
+- (void)stopAnimating;
 @end
 
 @implementation ZeroNativeMetalView
@@ -1831,6 +1835,27 @@ void zero_native_appkit_show_notification(zero_native_appkit_host_t *host, const
     [cmd commit];
 }
 
+- (void)startAnimating {
+    if (self.displayLink) return;
+    CVDisplayLinkCreateWithActiveCGDisplays(&_displayLink);
+    CVDisplayLinkSetOutputCallback(_displayLink, ZeroNativeDisplayLinkCallback, (__bridge void *)self);
+    CVDisplayLinkStart(_displayLink);
+}
+
+- (void)stopAnimating {
+    if (!self.displayLink) return;
+    CVDisplayLinkStop(self.displayLink);
+    CVDisplayLinkRelease(self.displayLink);
+    self.displayLink = NULL;
+}
+
+static CVReturn ZeroNativeDisplayLinkCallback(CVDisplayLinkRef link, const CVTimeStamp *now, const CVTimeStamp *outputTime, CVOptionFlags flagsIn, CVOptionFlags *flagsOut, void *context) {
+    (void)link; (void)now; (void)outputTime; (void)flagsIn; (void)flagsOut;
+    ZeroNativeMetalView *view = (__bridge ZeroNativeMetalView *)context;
+    [view render];
+    return kCVReturnSuccess;
+}
+
 @end
 
 static NSMutableDictionary<NSNumber *, ZeroNativeMetalView *> *ZeroNativeSurfaceMap(void) {
@@ -1874,6 +1899,18 @@ void zero_native_appkit_render_surface(zero_native_appkit_host_t *host, uint32_t
     (void)host;
     ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
     if (overlay) [overlay render];
+}
+
+void zero_native_appkit_start_surface_animation(zero_native_appkit_host_t *host, uint32_t surface_id) {
+    (void)host;
+    ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
+    if (overlay) [overlay startAnimating];
+}
+
+void zero_native_appkit_stop_surface_animation(zero_native_appkit_host_t *host, uint32_t surface_id) {
+    (void)host;
+    ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
+    if (overlay) [overlay stopAnimating];
 }
 
 // ── Carbon hotkey support ────────────────────────────────────────────────

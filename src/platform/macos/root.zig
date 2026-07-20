@@ -117,6 +117,8 @@ extern fn zero_native_appkit_create_surface(host: *AppKitHost, x: f64, y: f64, w
 extern fn zero_native_appkit_close_surface(host: *AppKitHost, surface_id: u32) void;
 extern fn zero_native_appkit_set_surface_frame(host: *AppKitHost, surface_id: u32, x: f64, y: f64, width: f64, height: f64) void;
 extern fn zero_native_appkit_render_surface(host: *AppKitHost, surface_id: u32) void;
+extern fn zero_native_appkit_start_surface_animation(host: *AppKitHost, surface_id: u32) void;
+extern fn zero_native_appkit_stop_surface_animation(host: *AppKitHost, surface_id: u32) void;
 extern fn zero_native_appkit_show_notification(host: *AppKitHost, title: [*]const u8, title_len: usize, body: [*]const u8, body_len: usize) void;
 
 pub const MacPlatform = struct {
@@ -190,6 +192,8 @@ pub const MacPlatform = struct {
                 .close_surface_fn = closeSurface,
                 .set_surface_frame_fn = setSurfaceFrame,
                 .render_surface_fn = renderSurfaceService,
+                .start_surface_animation_fn = startAnimationService,
+                .stop_surface_animation_fn = stopAnimationService,
                 .configure_security_policy_fn = configureSecurityPolicy,
                 .emit_window_event_fn = emitWindowEvent,
             },
@@ -551,9 +555,27 @@ pub fn renderSurface(self: *MacPlatform, id: platform_mod.SurfaceId) void {
     zero_native_appkit_render_surface(self.host, id);
 }
 
+pub fn startSurfaceAnimation(self: *MacPlatform, id: platform_mod.SurfaceId) void {
+    zero_native_appkit_start_surface_animation(self.host, id);
+}
+
+pub fn stopSurfaceAnimation(self: *MacPlatform, id: platform_mod.SurfaceId) void {
+    zero_native_appkit_stop_surface_animation(self.host, id);
+}
+
 fn renderSurfaceService(context: ?*anyopaque, id: platform_mod.SurfaceId) anyerror!void {
     const self: *MacPlatform = @ptrCast(@alignCast(context.?));
     self.renderSurface(id);
+}
+
+fn startAnimationService(context: ?*anyopaque, id: platform_mod.SurfaceId) anyerror!void {
+    const self: *MacPlatform = @ptrCast(@alignCast(context.?));
+    self.startSurfaceAnimation(id);
+}
+
+fn stopAnimationService(context: ?*anyopaque, id: platform_mod.SurfaceId) anyerror!void {
+    const self: *MacPlatform = @ptrCast(@alignCast(context.?));
+    self.stopSurfaceAnimation(id);
 }
 
 test "mac platform module exports type" {
