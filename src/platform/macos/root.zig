@@ -119,6 +119,7 @@ extern fn zero_native_appkit_set_surface_frame(host: *AppKitHost, surface_id: u3
 extern fn zero_native_appkit_render_surface(host: *AppKitHost, surface_id: u32) void;
 extern fn zero_native_appkit_start_surface_animation(host: *AppKitHost, surface_id: u32) void;
 extern fn zero_native_appkit_stop_surface_animation(host: *AppKitHost, surface_id: u32) void;
+extern fn zero_native_appkit_set_surface_color(host: *AppKitHost, surface_id: u32, r: f32, g: f32, b: f32, a: f32) void;
 extern fn zero_native_appkit_show_notification(host: *AppKitHost, title: [*]const u8, title_len: usize, body: [*]const u8, body_len: usize) void;
 
 pub const MacPlatform = struct {
@@ -194,6 +195,7 @@ pub const MacPlatform = struct {
                 .render_surface_fn = renderSurfaceService,
                 .start_surface_animation_fn = startAnimationService,
                 .stop_surface_animation_fn = stopAnimationService,
+                .set_surface_color_fn = setColorService,
                 .configure_security_policy_fn = configureSecurityPolicy,
                 .emit_window_event_fn = emitWindowEvent,
             },
@@ -563,6 +565,10 @@ pub fn stopSurfaceAnimation(self: *MacPlatform, id: platform_mod.SurfaceId) void
     zero_native_appkit_stop_surface_animation(self.host, id);
 }
 
+pub fn setSurfaceColor(self: *MacPlatform, id: platform_mod.SurfaceId, r: f32, g: f32, b: f32, a: f32) void {
+    zero_native_appkit_set_surface_color(self.host, id, r, g, b, a);
+}
+
 fn renderSurfaceService(context: ?*anyopaque, id: platform_mod.SurfaceId) anyerror!void {
     const self: *MacPlatform = @ptrCast(@alignCast(context.?));
     self.renderSurface(id);
@@ -576,6 +582,11 @@ fn startAnimationService(context: ?*anyopaque, id: platform_mod.SurfaceId) anyer
 fn stopAnimationService(context: ?*anyopaque, id: platform_mod.SurfaceId) anyerror!void {
     const self: *MacPlatform = @ptrCast(@alignCast(context.?));
     self.stopSurfaceAnimation(id);
+}
+
+fn setColorService(context: ?*anyopaque, id: platform_mod.SurfaceId, r: f32, g: f32, b: f32, a: f32) anyerror!void {
+    const self: *MacPlatform = @ptrCast(@alignCast(context.?));
+    self.setSurfaceColor(id, r, g, b, a);
 }
 
 test "mac platform module exports type" {

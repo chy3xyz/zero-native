@@ -365,6 +365,7 @@ pub const PlatformServices = struct {
     render_surface_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
     start_surface_animation_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
     stop_surface_animation_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId) anyerror!void = null,
+    set_surface_color_fn: ?*const fn (context: ?*anyopaque, id: SurfaceId, r: f32, g: f32, b: f32, a: f32) anyerror!void = null,
     configure_security_policy_fn: ?*const fn (context: ?*anyopaque, policy: security.Policy) anyerror!void = null,
     emit_window_event_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId, name: []const u8, detail_json: []const u8) anyerror!void = null,
 
@@ -516,6 +517,11 @@ pub const PlatformServices = struct {
     pub fn stopSurfaceAnimation(self: PlatformServices, id: SurfaceId) anyerror!void {
         const stop_fn = self.stop_surface_animation_fn orelse return error.UnsupportedService;
         return stop_fn(self.context, id);
+    }
+
+    pub fn setSurfaceColor(self: PlatformServices, id: SurfaceId, r: f32, g: f32, b: f32, a: f32) anyerror!void {
+        const color_fn = self.set_surface_color_fn orelse return error.UnsupportedService;
+        return color_fn(self.context, id, r, g, b, a);
     }
 
     pub fn configureSecurityPolicy(self: PlatformServices, policy: security.Policy) anyerror!void {

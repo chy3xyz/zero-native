@@ -1856,6 +1856,15 @@ static CVReturn ZeroNativeDisplayLinkCallback(CVDisplayLinkRef link, const CVTim
     return kCVReturnSuccess;
 }
 
+- (void)setColorR:(float)r g:(float)g b:(float)b a:(float)a {
+    float vertices[] = {
+         0.0,  0.8, r, g, b, a,
+        -0.8, -0.6, r, g, b, a,
+         0.8, -0.6, r, g, b, a,
+    };
+    self.vertexBuffer = [self.device newBufferWithBytes:vertices length:sizeof(vertices) options:MTLResourceStorageModeShared];
+}
+
 @end
 
 static NSMutableDictionary<NSNumber *, ZeroNativeMetalView *> *ZeroNativeSurfaceMap(void) {
@@ -1911,6 +1920,12 @@ void zero_native_appkit_stop_surface_animation(zero_native_appkit_host_t *host, 
     (void)host;
     ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
     if (overlay) [overlay stopAnimating];
+}
+
+void zero_native_appkit_set_surface_color(zero_native_appkit_host_t *host, uint32_t surface_id, float r, float g, float b, float a) {
+    (void)host;
+    ZeroNativeMetalView *overlay = ZeroNativeSurfaceMap()[@(surface_id)];
+    if (overlay) [overlay setColorR:r g:g b:b a:a];
 }
 
 // ── Carbon hotkey support ────────────────────────────────────────────────

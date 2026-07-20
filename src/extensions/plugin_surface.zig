@@ -56,6 +56,16 @@ pub fn command(ctx: *anyopaque, runtime: extensions.RuntimeContext, cmd: extensi
         if (s.id) |id| {
             services.stopSurfaceAnimation(id) catch {};
         }
+    } else if (std.mem.eql(u8, cmd.name, "surface.color")) {
+        if (s.id) |id| {
+            // payload: "r,g,b,a" (0.0-1.0)
+            var parts = std.mem.splitScalar(u8, cmd.payload, ',');
+            const rr = std.fmt.parseFloat(f32, parts.next() orelse return) catch return;
+            const gg = std.fmt.parseFloat(f32, parts.next() orelse return) catch return;
+            const bb = std.fmt.parseFloat(f32, parts.next() orelse return) catch return;
+            const aa = std.fmt.parseFloat(f32, parts.next() orelse return) catch 1.0;
+            services.setSurfaceColor(id, rr, gg, bb, aa) catch {};
+        }
     }
 }
 
